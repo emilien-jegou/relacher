@@ -1,0 +1,61 @@
+{
+  "name": "relacher",
+  "version": "0.0.1",
+  "description": "Scriptable release orchestration library for monorepos",
+  "type": "module",
+  "private": false,
+  "author": "Emilien Jegou",
+  "license": "MIT",
+  "homepage": "https://github.com/emilien-jegou/relache#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emilien-jegou/relache.git"
+  },
+  "bugs": {
+    "url": "https://github.com/emilien-jegou/relache/issues"
+  },
+  "keywords": [
+    "bun",
+    "release",
+    "release-management",
+    "versioning",
+    "semver",
+    "monorepo",
+    "jujutsu",
+    "jj",
+    "git",
+    "pnpm",
+    "workspace",
+    "scriptable"
+  ],
+  "main": "./src/index.ts",
+  "types": "./lib-types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib-types/index.d.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "lib-types",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "ts:build": "tsc -p tsconfig.build.json",
+    "ts:watch": "tsc --noEmit --incremental --preserveWatchOutput --pretty --watch",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "lint:watch": "oxlint --watch",
+    "prepublishOnly": "bun run ts:build"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^24.12.4",
+    "oxfmt": "^0.19.0",
+    "oxlint": "^1.64.0",
+    "prettier": "^3.8.3",
+    "typescript": "^5.0.0"
+  }
+}
