@@ -1,5 +1,6 @@
 *
 
+!LICENSE
 !.envrc
 !.gitignore
 !.oxfmtrc.jsonc
@@ -17,3 +18,5 @@
 !examples/**/*
 !tests
 !tests/**/*
+!docs
+!docs/**/*

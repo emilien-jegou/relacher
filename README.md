@@ -6,12 +6,7 @@
 
 **Relacher** is a scriptable, workspace-aware release orchestration library designed for monorepos.
 
-```
-📦 cli_tool     3.1.2 → 3.3.0 [minor]
-   flake.nix  README.md  CHANGELOG.md  CHANGELOG.md
-     ✦ 4a0ce62 feat(ui): add progress indicator to execution flow  Author 2025-01-30
-     ✦ Cascaded as [minor] from deps: plugin_api [minor]
-```
+![Relacher](./docs/assets/relacher.png)
 
 ## Features
 
