@@ -4,3 +4,4 @@ export * from './vcs';
 export * from './builder';
 export * from './print';
 export * from './types';
+export * from './updater';
