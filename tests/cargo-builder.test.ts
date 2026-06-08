@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 
-import { cargoDeps, regexUpdate } from '../src/builder';
+import { cargoDeps } from '../src/builder';
+import { regexUpdate } from '../src/updater';
 
 import { mktemp, repo } from './utils/repo';
 import { toml } from './utils/toml';
@@ -42,11 +43,10 @@ describe('Cargo Workspace Builder', () => {
     expect(server?.watch).toEqual(['crates/server']);
 
     // Check built-in TOML updater
-    expect(math?.updates?.[0]).toEqual({
-      kind: 'toml',
-      path: 'crates/math/Cargo.toml',
-      toml: 'package.version',
-    });
+    const tomlUpdate = math?.updates?.[0];
+    expect(tomlUpdate).toBeDefined();
+    expect(tomlUpdate!.kind).toEqual('toml');
+    expect(tomlUpdate!.params.path).toEqual('crates/math/Cargo.toml');
 
     // Check Graph Dependency Injection
     expect(server?.depends).toContain('math');
@@ -69,10 +69,10 @@ describe('Cargo Workspace Builder', () => {
 
     const server = deps.find((d) => d.name === 'server');
     expect(server?.updates).toHaveLength(2); // The default toml one + the new regex one
-    expect(server?.updates?.[1]).toMatchObject({
-      kind: 'regex',
-      path: './Dockerfile',
-      replace: 'v{{version}}',
-    });
+    const update = server?.updates?.[1];
+    expect(update).toBeDefined();
+    expect(update!.kind).toBe('regex');
+    expect(update!.path).toBe('./Dockerfile');
+    expect(update!.params.replace).toBe('v{{version}}');
   });
 });

@@ -15,7 +15,11 @@ export function runJj(cmd: string, cwd: string): string {
 }
 
 function parseSemver(tag: string, prefix: string): number[] {
-  return tag.slice(prefix.length).split('.').map(Number);
+  const versionStr = tag.slice(prefix.length);
+  return versionStr.split('.').map((part) => {
+    const val = Number.parseInt(part, 10);
+    return Number.isNaN(val) ? 0 : val;
+  });
 }
 
 export function findLatestJjTag(tags: string[], prefix: string): string | null {
@@ -46,15 +50,12 @@ export function getJjCommits(
 ): Commit[] {
   const lastTag = resolveJjTag(name, allTags);
 
-  // FIXED: Double quotes explicitly escape the literal tag name for the jj revset engine
   const range = lastTag ? `"${lastTag}"..@ & ~root()` : `::@ & ~root()`;
 
-  // Calling `.short(40)` to cast the CommitId into a 40-character hex String for template concatenation
   const template =
     'commit_id.short(40) ++ "|" ++ author.name() ++ "|" ++ author.timestamp().format("%Y-%m-%d") ++ "|" ++ description.first_line() ++ "\\n"';
 
   const watchPaths = watch.join(' ');
-  // Appending --color=never to strip ANSI escape codes so hashes can be parsed cleanly
   const jjCmd = watchPaths
     ? `log --no-graph -r '${range}' -T '${template}' -- ${watchPaths}`
     : `log --no-graph -r '${range}' -T '${template}'`;
@@ -98,7 +99,6 @@ export class JjVcsProvider implements VcsProvider {
 
   private getAllTags(): string[] {
     if (this.allTags === null) {
-      // Must enforce --color=never to prevent ANSI escape codes from failing the startsWith prefix checks
       const raw = runJj('tag list', this.cwd);
       this.allTags = raw
         .split('\n')
@@ -116,12 +116,29 @@ export class JjVcsProvider implements VcsProvider {
     return getJjCommits(name, watch, tags, this.cwd);
   }
 
+  async getLatestTag(name?: string): Promise<string | null> {
+    const tags = this.getAllTags();
+
+    if (typeof name === 'string') {
+      // Check specific crate tag first
+      const specificPrefix = `${name}-v`;
+      const specificTag = findLatestJjTag(tags, specificPrefix);
+      if (specificTag) return specificTag.slice(specificPrefix.length);
+    } else {
+      // Fallback to global release tag
+      const genericPrefix = 'v';
+      const genericTag = findLatestJjTag(tags, genericPrefix);
+      if (genericTag) return genericTag.slice(genericPrefix.length);
+    }
+
+    return null;
+  }
+
   async commit(message: string): Promise<void> {
     runJj(`commit -m "${message}"`, this.cwd);
   }
 
   async tag(tagName: string): Promise<void> {
-    // Appending --allow-move to update the tag reference cleanly if it already exists
     runJj(`tag set "${tagName}" -r @- --allow-move`, this.cwd);
   }
 }

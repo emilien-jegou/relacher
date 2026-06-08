@@ -1,15 +1,6 @@
-import {
-  prepare,
-  cargoDeps,
-  regexUpdate,
-  changelogUpdate,
-  prettyPrint,
-  run,
-  runGit,
-  JjVcsProvider,
-} from 'relache';
-import type { ChangelogContext } from 'relache';
-
+import { prepare, cargoDeps, prettyPrint, run, runGit, JjVcsProvider } from '../src';
+import type { ChangelogContext } from '../src';
+import { changelogUpdate, regexUpdate } from '../src/updater';
 import { mktemp, repo, toml } from '../tests/utils';
 
 // Utility helper to group an array of objects by a string property
@@ -83,8 +74,8 @@ async function runComplexExample(): Promise<void> {
         .update('flake.nix', () => `{\n  version = "3.1.2";\n}\n`)
         .update('README.md', () => `# CLI Tool v3.1.2\n`),
     )
+    // Mark release checkpoint for two out of three deps
     .tag('core_lib-v1.0.0')
-    .tag('plugin_api-v0.2.0')
     .tag('cli_tool-v3.1.2')
 
     // Simulate development leading up to Cycle 1 Release
@@ -135,8 +126,6 @@ async function runComplexExample(): Promise<void> {
         }),
       ),
   );
-
-  console.log(JSON.stringify(CargoDeps1, null, ' '));
 
   const vcs1 = new JjVcsProvider(tempDir);
   // const vcs1 = new GitVcsProvider(tempDir);

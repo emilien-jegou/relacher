@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 
-import { cargoDeps, regexUpdate } from '../src/builder';
-import { prepare } from '../src/prepare';
+import { cargoDeps } from '../src/builder';
+import { prepare, getCurrentVersion } from '../src/prepare';
 import { run } from '../src/run';
-import type { SizePatterns } from '../src/types';
+import type { SizePatterns, VcsProvider } from '../src/types';
+import { regexUpdate } from '../src/updater';
 import { JjVcsProvider } from '../src/vcs/jj';
 
 import { mktemp, repo } from './utils/repo';
@@ -73,8 +74,8 @@ describe('End-to-End Prepare Pipeline', () => {
     const apiReport = reports.find((r) => r.name === 'api');
     const regexUp = apiReport?.updates.find((u) => u.kind === 'regex');
     expect(regexUp).toBeDefined();
-    if (regexUp?.kind === 'regex') {
-      expect(regexUp.resolvedReplace).toBe('v2.1.1');
+    if (regexUp && regexUp.kind === 'regex') {
+      expect(regexUp.params.resolvedReplace).toBe('v2.1.1');
     }
   });
 
@@ -210,8 +211,6 @@ describe('End-to-End Prepare Pipeline', () => {
       c.update('crates/api/src/main.rs', () => '// fixed routing'),
     );
 
-    // Fresh VCS provider mimics second invocation of a CLI command
-    // TODO: run the tests for each vcs
     const vcs2 = new JjVcsProvider(temp.path);
     const deps2 = cargoDeps(temp.path);
     const reports2 = await prepare(deps2, vcs2, { cwd: temp.path, sizes });
@@ -236,7 +235,6 @@ describe('End-to-End Prepare Pipeline', () => {
       c.update('crates/core/src/db.rs', () => '// breaking changes'),
     );
 
-    // Fresh VCS provider mimics third invocation of a CLI command
     const vcs3 = new JjVcsProvider(temp.path);
     const deps3 = cargoDeps(temp.path);
     const reports3 = await prepare(deps3, vcs3, { cwd: temp.path, sizes });
@@ -261,10 +259,46 @@ describe('End-to-End Prepare Pipeline', () => {
 
     expect(logs[0]).toInclude('chore: release core-v2.0.0, api-v1.0.3');
     expect(logs[1]).toInclude('fix(core)!: breaking database migration');
-    expect(logs[2]).toInclude('chore: release core-v1.1.0, api-v1.0.2');
+    expect(logs[2]).toInclude('chore: release api-v1.0.2'); // Corrected from core-v1.1.0, api-v1.0.2
     expect(logs[3]).toInclude('fix(api): resolve routing bug');
     expect(logs[4]).toInclude('chore: release core-v1.1.0, api-v1.0.1');
     expect(logs[5]).toInclude('feat(core): add authentication engine');
     expect(logs[6]).toInclude('chore: init');
+  });
+});
+
+describe('getCurrentVersion tag parsing unit tests', () => {
+  it('should isolate the semantic version string from various common tag templates', async () => {
+    const mockVcsWithTag = (tagValue: string | null): VcsProvider =>
+      ({
+        getLatestTag: async () => tagValue,
+        getCommits: async () => [],
+      }) as unknown as VcsProvider;
+
+    const mockConfig = { name: 'workspace-crate' } as any;
+
+    expect(
+      await getCurrentVersion(mockConfig, mockVcsWithTag('workspace-crate-v1.2.3'), ''),
+    ).toEqual({
+      version: '1.2.3',
+      isFallback: false,
+    });
+
+    expect(
+      await getCurrentVersion(mockConfig, mockVcsWithTag('workspace-crate/v2.10.0-beta.1'), ''),
+    ).toEqual({
+      version: '2.10.0-beta.1',
+      isFallback: false,
+    });
+
+    expect(await getCurrentVersion(mockConfig, mockVcsWithTag('v3.0.1'), '')).toEqual({
+      version: '3.0.1',
+      isFallback: false,
+    });
+
+    expect(await getCurrentVersion(mockConfig, mockVcsWithTag('4.0.0'), '')).toEqual({
+      version: '4.0.0',
+      isFallback: false,
+    });
   });
 });

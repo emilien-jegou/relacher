@@ -11,7 +11,11 @@ export function runGit(cmd: string, cwd: string): string {
 }
 
 function parseSemver(tag: string, prefix: string): number[] {
-  return tag.slice(prefix.length).split('.').map(Number);
+  const versionStr = tag.slice(prefix.length);
+  return versionStr.split('.').map((part) => {
+    const val = Number.parseInt(part, 10);
+    return Number.isNaN(val) ? 0 : val;
+  });
 }
 
 export function findLatestTag(tags: string[], prefix: string): string | null {
@@ -44,7 +48,6 @@ export function getGitCommits(
   const watchPaths = watch.join(' ');
   const range = lastTag ? `${lastTag}..HEAD` : 'HEAD';
 
-  // Using shell-safe single quotes and disabling signature lines to prevent parsing corruption
   const gitCmd = watchPaths
     ? `git log ${range} --no-show-signature --format='%H|%an|%ad|%s' --date=short -- ${watchPaths}`
     : `git log ${range} --no-show-signature --format='%H|%an|%ad|%s' --date=short`;
@@ -90,7 +93,7 @@ export class GitVcsProvider implements VcsProvider {
     if (this.allTags === null) {
       this.allTags = runGit('git tag', this.cwd)
         .split('\n')
-        .map((t) => t.trim()) // Strips carriage returns (\r) and trailing whitespaces
+        .map((t) => t.trim())
         .filter(Boolean);
     }
     return this.allTags;
@@ -99,6 +102,24 @@ export class GitVcsProvider implements VcsProvider {
   async getCommits(name: string, watch: string[]): Promise<Commit[]> {
     const tags = this.getAllTags();
     return getGitCommits(name, watch, tags, this.cwd);
+  }
+
+  async getLatestTag(name?: string): Promise<string | null> {
+    const tags = this.getAllTags();
+
+    if (typeof name === 'string') {
+      // Check specific crate tag first (e.g., "my_crate-v1.0.0")
+      const specificPrefix = `${name}-v`;
+      const specificTag = findLatestTag(tags, specificPrefix);
+      if (specificTag) return specificTag.slice(specificPrefix.length);
+    } else {
+      // Fallback to global release tag (e.g., "v1.0.0")
+      const genericPrefix = 'v';
+      const genericTag = findLatestTag(tags, genericPrefix);
+      if (genericTag) return genericTag.slice(genericPrefix.length);
+    }
+
+    return null;
   }
 
   async commit(message: string): Promise<void> {

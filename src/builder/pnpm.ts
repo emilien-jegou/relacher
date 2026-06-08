@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { DependencyConfig } from '../types';
+import { jsonUpdate, jsonFallback } from '../updater';
 
 import { decorateList, type DependencyList } from './shared';
 
@@ -21,13 +22,12 @@ export function pnpmProject(cwd: string): DependencyList {
           name: parsed.name,
           watch: ['.'],
           depends: [],
+          versionFallback: jsonFallback({ path: 'package.json', json: 'version' }),
           updates: [
-            {
-              kind: 'regex',
+            jsonUpdate({
               path: 'package.json',
-              search: '"version"\\s*:\\s*"[^"]+"',
-              replace: '"version": "{{version}}"',
-            },
+              json: 'version',
+            }),
           ],
         });
       }
@@ -114,7 +114,10 @@ export function pnpmWorkspace(cwd: string): DependencyList {
 
   for (const info of packageInfos) {
     const relativePath = path.relative(cwd, info.memberPath);
-    const relativePJson = path.join(relativePath, 'package.json');
+    const posixRelativePath = relativePath.split(path.sep).join(path.posix.sep);
+    const relativePJson = posixRelativePath
+      ? path.posix.join(posixRelativePath, 'package.json')
+      : 'package.json';
 
     const parsed = JSON.parse(info.content);
     const depends: string[] = [];
@@ -134,15 +137,14 @@ export function pnpmWorkspace(cwd: string): DependencyList {
 
     configs.push({
       name: info.name,
-      watch: [relativePath],
+      watch: [posixRelativePath || '.'],
       depends,
+      versionFallback: jsonFallback({ path: relativePJson, json: 'version' }),
       updates: [
-        {
-          kind: 'regex',
+        jsonUpdate({
           path: relativePJson,
-          search: '"version"\\s*:\\s*"[^"]+"',
-          replace: '"version": "{{version}}"',
-        },
+          json: 'version',
+        }),
       ],
     });
   }

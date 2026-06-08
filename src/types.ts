@@ -1,17 +1,18 @@
+import type { UpdateAction, UpdateActionResolved, VersionFallback } from './updater';
 import type { VcsProvider } from './vcs';
 
-export type BumpSize = "major" | "minor" | "patch" | "skip";
+export type BumpSize = 'major' | 'minor' | 'patch' | 'skip';
 
 export interface Commit {
   hash: string;
   shortHash: string;
   author: string;
   date: string;
-  message: string;          // The full commit message
-  type: string;             // e.g., 'feat', 'fix', 'chore'
-  scope: string | null;     // e.g., 'ui', 'api'
-  isBreaking: boolean;      // true if contains '!' or 'BREAKING CHANGE'
-  description: string;      // The text after the colon
+  message: string; // The full commit message
+  type: string; // e.g., 'feat', 'fix', 'chore'
+  scope: string | null; // e.g., 'ui', 'api'
+  isBreaking: boolean; // true if contains '!' or 'BREAKING CHANGE'
+  description: string; // The text after the colon
 }
 
 export interface ChangelogContext {
@@ -20,34 +21,11 @@ export interface ChangelogContext {
   commits: Commit[];
 }
 
-export interface ChangelogUpdate {
-  kind: "changelog";
-  path: string;
-  global?: boolean;
-  template?: (ctx: ChangelogContext) => string;
-  resolvedBlock?: string;
-}
-
-export interface TomlUpdate {
-  kind: "toml";
-  path: string;
-  toml: string;
-}
-
-export interface RegexUpdate {
-  kind: "regex";
-  path: string;
-  search: string;
-  replace: string;
-  resolvedReplace?: string;
-}
-
-export type UpdateAction = TomlUpdate | RegexUpdate | ChangelogUpdate;
-
 export interface DependencyConfig {
   name: string;
   watch?: string[];
-  updates?: UpdateAction[];
+  updates: UpdateAction[];
+  versionFallback?: VersionFallback;
   depends?: string[];
 }
 
@@ -82,8 +60,10 @@ export interface DependencyUpdateReport {
   bump: BumpSize;
   originalBump?: BumpSize;
   commits: Commit[];
-  updates: UpdateAction[];
+  updates: UpdateActionResolved[];
   depends?: string[];
+  isErroneous?: boolean;
+  isFirstRelease?: boolean;
 }
 
 export interface IntermediateReport {
@@ -95,20 +75,8 @@ export interface IntermediateReport {
   commits: Commit[];
   updates: UpdateAction[];
   depends: string[];
+  isErroneous?: boolean;
+  isFirstRelease?: boolean;
 }
-
-export const defaultSizes: SizePatterns = {
-  major: { pattern: "^[a-z]+(?:\\([^)]+\\))?!:|BREAKING CHANGE" },
-  minor: { pattern: "^feat|^revert" },
-  patch: { pattern: "^fix|^build|^refactor|^nit|^style" },
-  skip: { pattern: "^release|^chore|^infra|^docs|^test|^ci|^build" },
-};
-
-export const defaultCascadeRules: Required<CascadeRules> = {
-  skip: { skip: 'skip', patch: 'patch', minor: 'patch', major: 'patch' },
-  patch: { skip: 'patch', patch: 'patch', minor: 'minor', major: 'minor' },
-  minor: { skip: 'minor', patch: 'minor', minor: 'minor', major: 'minor' },
-  major: { skip: 'major', patch: 'major', minor: 'major', major: 'major' },
-};
 
 export type { VcsProvider };

@@ -1,12 +1,5 @@
-import type { ChangelogUpdate, RegexUpdate, DependencyConfig, UpdateAction } from '../types';
-
-export function changelogUpdate(options: Omit<ChangelogUpdate, 'kind'>): ChangelogUpdate {
-  return { kind: 'changelog', ...options };
-}
-
-export function regexUpdate(options: Omit<RegexUpdate, 'kind'>): RegexUpdate {
-  return { kind: 'regex', ...options };
-}
+import type { DependencyConfig } from '../types';
+import type { UpdateAction } from '../updater';
 
 export class SingleDependencyBuilder {
   constructor(private config: DependencyConfig) { }

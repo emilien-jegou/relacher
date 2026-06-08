@@ -19,7 +19,7 @@ export class TempDir implements Disposable {
 export const mktemp = (): TempDir => new TempDir();
 
 export class CommitContext {
-  constructor(private dir: string) { }
+  constructor(private dir: string) {}
 
   update(filePath: string, updater: (oldContent: string) => string): this {
     const fullPath = path.join(this.dir, filePath);

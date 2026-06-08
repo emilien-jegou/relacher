@@ -1,5 +1,5 @@
+import { defaultSizes } from './default-data';
 import { matchBumpSize } from './prepare';
-import { defaultSizes } from './types';
 import type { DependencyUpdateReport } from './types';
 
 // ANSI Escape Codes for Terminal Colors
@@ -57,14 +57,19 @@ function getIconForFile(filename: string): string {
 
   return icons[ext] || '󰈚'; // Default file icon
 }
+
 export function prettyPrint(reports: DependencyUpdateReport[]): void {
   for (const report of reports) {
     if (report.bump === 'skip') continue;
 
     const bumpColor =
       report.bump === 'major' ? c.red : report.bump === 'minor' ? c.yellow : c.green;
+
+    // Check if it's a first release (fallback was used instead of finding tags)
+    const firstReleaseBadge = report.isFirstRelease ? ` ${c.cyan}🌱 (first release)${c.reset}` : '';
+
     process.stdout.write(
-      `${c.bold}📦 ${report.name.padEnd(12)}${c.reset} ${highlightVersion(report.currentVersion, report.newVersion)} ${bumpColor}${c.bold}[${report.bump}]${c.reset}\n`,
+      `${c.bold}📦 ${report.name.padEnd(12)}${c.reset} ${highlightVersion(report.currentVersion, report.newVersion)} ${bumpColor}${c.bold}[${report.bump}]${c.reset}${firstReleaseBadge}\n`,
     );
 
     const files = report.updates.map(
@@ -80,8 +85,9 @@ export function prettyPrint(reports: DependencyUpdateReport[]): void {
 
       const marker = affectsBump ? `${c.green}✦${c.reset}` : `${c.gray}○${c.reset}`;
 
+      // User string is now wrapped with <>
       console.log(
-        `     ${marker} ${c.yellow}${commit.shortHash}${c.reset} ${commit.message}  ${c.gray}${commit.author} ${commit.date}${c.reset}`,
+        `     ${marker} ${c.yellow}${commit.shortHash}${c.reset} ${commit.message}  ${c.gray}<${commit.author}> ${commit.date}${c.reset}`,
       );
     }
 
@@ -103,7 +109,6 @@ export function prettyPrint(reports: DependencyUpdateReport[]): void {
       );
     }
 
-    // Changelog Preview
     console.log('');
   }
 }
