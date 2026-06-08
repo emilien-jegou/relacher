@@ -5,6 +5,7 @@
 !.oxfmtrc.jsonc
 !.oxlintrc.jsonc
 !bun.lock
+!devenv.lock
 !devenv.nix
 !make.nix
 !package.json
