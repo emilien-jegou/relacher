@@ -7,7 +7,7 @@ export function runJj(cmd: string, cwd: string): string {
     return execSync(`jj --color=never ${cmd}`, {
       cwd,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'inherit'],
+      stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
   } catch {
     return '';
