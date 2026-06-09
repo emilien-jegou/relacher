@@ -100,27 +100,20 @@ async function runComplexExample(): Promise<void> {
   const CargoDeps1 = cargoDeps(tempDir).on('cli_tool', (c) =>
     c
       .update(
-        regexUpdate({
-          path: './flake.nix',
+        regexUpdate('./flake.nix', {
           search: 'version = "[^"]+"',
           replace: 'version = "{{version}}"',
         }),
       )
       .update(
-        regexUpdate({
-          path: './README.md',
+        regexUpdate('./README.md', {
           search: 'CLI Tool v[^\\s]+',
           replace: 'CLI Tool v{{version}}',
         }),
       )
+      .update(changelogUpdate('./crates/cli_tool/CHANGELOG.md', {}))
       .update(
-        changelogUpdate({
-          path: './crates/cli_tool/CHANGELOG.md',
-        }),
-      )
-      .update(
-        changelogUpdate({
-          path: './CHANGELOG.md',
+        changelogUpdate('./CHANGELOG.md', {
           global: true,
           template: cliffTemplate,
         }),
@@ -177,27 +170,20 @@ async function runComplexExample(): Promise<void> {
   const CargoDeps2 = cargoDeps(tempDir).on('cli_tool', (c) =>
     c
       .update(
-        regexUpdate({
-          path: './flake.nix',
+        regexUpdate('./flake.nix', {
           search: 'version = "[^"]+"',
           replace: 'version = "{{version}}"',
         }),
       )
       .update(
-        regexUpdate({
-          path: './README.md',
+        regexUpdate('./README.md', {
           search: 'CLI Tool v[^\\s]+',
           replace: 'CLI Tool v{{version}}',
         }),
       )
+      .update(changelogUpdate('./crates/cli_tool/CHANGELOG.md', {}))
       .update(
-        changelogUpdate({
-          path: './crates/cli_tool/CHANGELOG.md',
-        }),
-      )
-      .update(
-        changelogUpdate({
-          path: './CHANGELOG.md',
+        changelogUpdate('./CHANGELOG.md', {
           global: true,
           template: cliffTemplate,
         }),

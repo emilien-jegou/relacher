@@ -1,57 +1,53 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { VersionFallback, UpdateAction, UpdateActionResolved, UpdateActionOptions } from '.';
+import { patch } from '@decimalturn/toml-patch';
+import { parse } from 'smol-toml';
 
-export type TomlFallbackParams = { path: string; toml: string };
-export type TomlUpdateParams = { path: string; toml: string; required?: boolean };
+import type { DependencyUpdateReport } from '../types';
+
+import { type VersionFallback, updateBuilder } from '.';
+
+export type TomlFallbackParams = {
+  path: string;
+  read: (parsed: any) => string | null | undefined;
+};
+
+export type TomlUpdateParams = (
+  parsed: any,
+  report: DependencyUpdateReport,
+  reports: DependencyUpdateReport[],
+) => void;
 
 export const tomlFallback = (params: TomlFallbackParams): VersionFallback => ({
   readFallback(cwd: string): string | null {
     const filePath = path.resolve(cwd, params.path);
     if (!fs.existsSync(filePath)) return null;
-    const content = fs.readFileSync(filePath, 'utf8');
-    const packageMatch = content.match(/\[package\][^]*?(?=^\[|z)/);
-    const targetText = packageMatch ? packageMatch[0] : content;
-    const versionMatch = targetText.match(/^version\s*=\s*"([^"]+)"/m);
-    return versionMatch && versionMatch[1] ? versionMatch[1] : null;
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const parsed = parse(content);
+      return params.read(parsed) ?? null;
+    } catch {
+      return null;
+    }
   },
 });
 
-export const tomlUpdate = (params: TomlUpdateParams): UpdateAction => ({
+export const tomlUpdate = updateBuilder<TomlUpdateParams>({
   kind: 'toml',
-  path: params.path,
-  params,
-  required: params.required,
-  prepare(_data: UpdateActionOptions): UpdateActionResolved {
-    return {
-      kind: 'toml',
-      path: params.path,
-      params,
-      apply(report, reports, cwd) {
-        const filePath = path.resolve(cwd, params.path);
-        if (!fs.existsSync(filePath)) return;
+  apply({ targetPath, params, report, reports, cwd }) {
+    const filePath = path.resolve(cwd, targetPath);
+    if (!fs.existsSync(filePath)) return;
 
-        let content = fs.readFileSync(filePath, 'utf8');
+    const content = fs.readFileSync(filePath, 'utf8');
+    const parsed = parse(content);
 
-        // Update package version inside the target Cargo.toml package block
-        content = content.replace(
-          /(\[package\][^]*?^version\s*=\s*")[^"]+(")/m,
-          `$1${report.newVersion}$2`,
-        );
+    // Safely mutate the object using the user provided callback
+    params(parsed, report, reports);
 
-        // Sync workspace dependency entries if internal dependencies changed
-        for (const depReport of reports) {
-          if (depReport.name === report.name) continue;
-          const depRegex = new RegExp(
-            `(${depReport.name}\\s*=\\s*\\{[^}]*version\\s*=\\s*")[^"]+(")`,
-            'g',
-          );
-          content = content.replace(depRegex, `$1${depReport.newVersion}$2`);
-        }
+    // Patch the original document string using the mutated JS object
+    const updatedContent = patch(content, parsed);
 
-        fs.writeFileSync(filePath, content);
-      },
-    };
+    fs.writeFileSync(filePath, updatedContent);
   },
 });

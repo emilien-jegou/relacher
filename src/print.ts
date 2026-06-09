@@ -74,7 +74,7 @@ export function prettyPrint(reports: DependencyUpdateReport[]): void {
 
     const files = report.updates.map(
       (u) =>
-        `${getIconForFile(u.path.split('/').pop() || '')} ${c.dim}${u.path.split('/').pop()}${c.reset}`,
+        `${getIconForFile(u.targetPath.split('/').pop() || '')} ${c.dim}${u.targetPath.split('/').pop()}${c.reset}`,
     );
     console.log(`   ${files.join('  ')}`);
 

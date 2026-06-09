@@ -1,174 +1,307 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { parse } from 'smol-toml';
+
 import type { DependencyConfig } from '../types';
-import { regexUpdate, tomlUpdate, tomlFallback } from '../updater';
+import { tomlUpdate, tomlFallback } from '../updater';
 
 import { decorateList, type DependencyList } from './shared';
 
-export interface CargoBuilderOptions {
-  syncWorkspaceDeps?: boolean;
+declare module './shared' {
+  interface DependencyList {
+    couple(a: string, b: string): this;
+  }
 }
 
-/**
- * Loads a single Cargo project from a target Cargo.toml.
- */
-export function cargoProject(cwd: string): DependencyList {
-  const configs: DependencyConfig[] = [];
-  const rootCargo = path.join(cwd, 'Cargo.toml');
+export interface CargoBuilderOptions { }
 
-  if (fs.existsSync(rootCargo)) {
-    const fileContent = fs.readFileSync(rootCargo, 'utf8');
-    const nameMatch = fileContent.match(/^name\s*=\s*"([^"]+)"/m);
-    const parsedName = nameMatch?.[1] ?? '';
-    if (parsedName) {
-      configs.push({
-        name: parsedName,
-        watch: ['.'],
-        depends: [],
-        versionFallback: tomlFallback({ path: 'Cargo.toml', toml: 'package.version' }),
-        updates: [tomlUpdate({ path: 'Cargo.toml', toml: 'package.version' })],
-      });
-    }
-  }
-
-  return decorateList(configs);
+interface PathDep {
+  name: string;
+  path: string;
 }
 
-/**
- * Loads a Cargo workspace, tracking member paths, dependency links, and recursive nested paths.
- */
-export function cargoWorkspace(cwd: string, options?: CargoBuilderOptions): DependencyList {
-  const configs: DependencyConfig[] = [];
-  const rootCargo = path.join(cwd, 'Cargo.toml');
-  const discoveredPaths = new Set<string>();
+function isWorkspace(cargoPath: string): boolean {
+  try {
+    const doc = parse(fs.readFileSync(cargoPath, 'utf8')) as any;
+    return !!doc?.workspace;
+  } catch {
+    return false;
+  }
+}
 
-  if (fs.existsSync(rootCargo)) {
-    const content = fs.readFileSync(rootCargo, 'utf8');
-    const membersMatch = content.match(/members\s*=\s*\[([^\]]+)\]/);
-    if (membersMatch && membersMatch[1]) {
-      const rawMembers = membersMatch[1].split(',').map((m) => m.replace(/["\s]/g, ''));
-      const crateInfos: { name: string; memberPath: string; content: string }[] = [];
+function checkDir(dir: string): { isRoot: boolean; hasCargo: boolean } {
+  const cargoPath = path.join(dir, 'Cargo.toml');
+  const hasCargo = fs.existsSync(cargoPath);
+  return { isRoot: hasCargo && isWorkspace(cargoPath), hasCargo };
+}
 
-      for (const member of rawMembers) {
-        if (!member) continue;
-        const globPath = path.join(cwd, member);
-        const cargoPaths = globPath.endsWith('*')
-          ? fs.existsSync(path.dirname(globPath))
-            ? fs
-              .readdirSync(path.dirname(globPath))
-              .map((dir) => path.join(path.dirname(globPath), dir, 'Cargo.toml'))
-            : []
-          : [path.join(globPath, 'Cargo.toml')];
+function findCargoWorkspaceRoot(cwd: string): string {
+  let current = path.resolve(cwd);
+  let bestRoot = current;
+  while (true) {
+    const { isRoot, hasCargo } = checkDir(current);
+    if (isRoot) return current;
+    if (hasCargo) bestRoot = current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return bestRoot;
+}
 
-        for (const p of cargoPaths) {
-          if (fs.existsSync(p)) {
-            const memberPath = path.dirname(p);
-            discoveredPaths.add(memberPath);
-            const fileContent = fs.readFileSync(p, 'utf8');
-            const nameMatch = fileContent.match(/^name\s*=\s*"([^"]+)"/m);
-            const parsedName = nameMatch?.[1] ?? '';
-            if (parsedName) {
-              crateInfos.push({
-                name: parsedName,
-                memberPath,
-                content: fileContent,
-              });
-            }
-          }
-        }
+function getPathFromVal(name: string, val: any, wsDeps: Record<string, any>): string | undefined {
+  if (val && typeof val === 'object') {
+    if (val.path) return val.path;
+    if (val.workspace === true && wsDeps[name]?.path) {
+      return wsDeps[name].path;
+    }
+  }
+  return undefined;
+}
+
+function collectDepsFromBlock(block: any, wsDeps: Record<string, any>): PathDep[] {
+  if (!block || typeof block !== 'object') return [];
+  const list: PathDep[] = [];
+  for (const [name, val] of Object.entries(block)) {
+    const p = getPathFromVal(name, val, wsDeps);
+    if (p) list.push({ name, path: p });
+  }
+  return list;
+}
+
+function collectTargetDeps(doc: any, wsDeps: Record<string, any>): PathDep[] {
+  if (!doc.target || typeof doc.target !== 'object') return [];
+  const list: PathDep[] = [];
+  for (const targetValue of Object.values(doc.target)) {
+    if (targetValue && typeof targetValue === 'object') {
+      list.push(...collectDepsFromBlock((targetValue as any).dependencies, wsDeps));
+      list.push(...collectDepsFromBlock((targetValue as any)['dev-dependencies'], wsDeps));
+      list.push(...collectDepsFromBlock((targetValue as any)['build-dependencies'], wsDeps));
+    }
+  }
+  return list;
+}
+
+function extractPathDependencies(doc: any, wsDeps: Record<string, any> = {}): PathDep[] {
+  return [
+    ...collectDepsFromBlock(doc.dependencies, wsDeps),
+    ...collectDepsFromBlock(doc['dev-dependencies'], wsDeps),
+    ...collectDepsFromBlock(doc['build-dependencies'], wsDeps),
+    ...collectTargetDeps(doc, wsDeps),
+  ];
+}
+
+class CrateScanner {
+  workspaceRoot: string;
+  workspaceDeps: Record<string, any>;
+  discoveredPaths = new Set<string>();
+  crateInfos: { name: string; memberPath: string; doc: any }[] = [];
+
+  constructor(workspaceRoot: string, workspaceDeps: Record<string, any>) {
+    this.workspaceRoot = workspaceRoot;
+    this.workspaceDeps = workspaceDeps;
+  }
+
+  registerCrate(p: string) {
+    const absPath = path.resolve(this.workspaceRoot, p);
+    if (this.discoveredPaths.has(absPath)) return;
+    this.discoveredPaths.add(absPath);
+    const cargoPath = path.join(absPath, 'Cargo.toml');
+    if (!fs.existsSync(cargoPath)) return;
+    try {
+      const doc = parse(fs.readFileSync(cargoPath, 'utf8')) as any;
+      if (doc.package?.name) {
+        this.crateInfos.push({ name: doc.package.name, memberPath: absPath, doc });
       }
+    } catch { }
+  }
+}
 
-      // Discover nested packages dynamically via path dependencies
-      let i = 0;
-      while (i < crateInfos.length) {
-        const info = crateInfos[i]!;
-        const pathDepsMatch = [
-          ...info.content.matchAll(/([a-zA-Z0-9_-]+)\s*=\s*\{[^}]*path\s*=\s*"([^"]+)"/g),
-        ];
-        for (const match of pathDepsMatch) {
-          const depName = match[1];
-          const depPath = match[2];
+function expandGlob(workspaceRoot: string, member: string): string[] {
+  const globPath = path.join(workspaceRoot, member);
+  if (!globPath.endsWith('*')) return [path.join(globPath, 'Cargo.toml')];
+  const dir = path.dirname(globPath);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).map((d) => path.join(dir, d, 'Cargo.toml'));
+}
 
-          // Verify matches are defined strings to resolve TypeScript's undefined safety warnings
-          if (typeof depName !== 'string' || typeof depPath !== 'string') {
-            continue;
-          }
+function registerWorkspaceMembers(scanner: CrateScanner, rootDoc: any) {
+  if (rootDoc.package?.name) {
+    scanner.registerCrate(scanner.workspaceRoot);
+  }
+  const members = rootDoc.workspace?.members;
+  if (!Array.isArray(members)) return;
+  for (const member of members) {
+    const paths = expandGlob(scanner.workspaceRoot, member).filter(fs.existsSync);
+    paths.forEach((p) => scanner.registerCrate(path.dirname(p)));
+  }
+}
 
-          const fullDepPath = path.resolve(info.memberPath, depPath);
+function runRecursiveDiscovery(scanner: CrateScanner) {
+  let i = 0;
+  while (i < scanner.crateInfos.length) {
+    const info = scanner.crateInfos[i]!;
+    const foundDeps = extractPathDependencies(info.doc, scanner.workspaceDeps);
+    for (const dep of foundDeps) {
+      const fullDepPath = path.resolve(info.memberPath, dep.path);
+      scanner.registerCrate(fullDepPath);
+    }
+    i++;
+  }
+}
 
-          if (!discoveredPaths.has(fullDepPath)) {
-            discoveredPaths.add(fullDepPath);
-            const cargoPath = path.join(fullDepPath, 'Cargo.toml');
+function updateBlockEntry(block: any, depName: string, newVersion: string) {
+  const dep = block[depName];
+  if (dep && typeof dep === 'object' && dep.version) {
+    dep.version = newVersion;
+  } else if (typeof dep === 'string') {
+    block[depName] = newVersion;
+  }
+}
 
-            if (fs.existsSync(cargoPath)) {
-              const fileContent = fs.readFileSync(cargoPath, 'utf8');
-              const nameMatch = fileContent.match(/^name\s*=\s*"([^"]+)"/m);
-              const parsedName = nameMatch?.[1] ?? depName;
+function syncDeps(block: any, reports: any[], selfName: string) {
+  if (!block || typeof block !== 'object') return;
+  for (const r of reports) {
+    if (r.name !== selfName && block[r.name]) {
+      updateBlockEntry(block, r.name, r.newVersion);
+    }
+  }
+}
 
-              crateInfos.push({
-                name: parsedName,
-                memberPath: fullDepPath,
-                content: fileContent,
-              });
-            }
-          }
-        }
-        i++;
-      }
-
-      for (const info of crateInfos) {
-        const relativePath = path.relative(cwd, info.memberPath);
-        const posixRelativePath = relativePath.split(path.sep).join(path.posix.sep);
-        const relativeCargo = posixRelativePath
-          ? path.posix.join(posixRelativePath, 'Cargo.toml')
-          : 'Cargo.toml';
-
-        const depends: string[] = [];
-        for (const other of crateInfos) {
-          if (other.name === info.name) continue;
-          const depPattern = new RegExp(`^\\s*${other.name}\\s*=`, 'm');
-          if (depPattern.test(info.content)) {
-            depends.push(other.name);
-          }
-        }
-
-        const updates = [tomlUpdate({ path: relativeCargo, toml: 'package.version' })];
-
-        if (options?.syncWorkspaceDeps) {
-          updates.push(
-            regexUpdate({
-              path: 'Cargo.toml',
-              search: `(${info.name}\\s*=\\s*\\{[^}]*version\\s*=\\s*")[^"]+(")`,
-              replace: `$1{{version}}$2`,
-            }),
-          );
-        }
-
-        configs.push({
-          name: info.name,
-          watch: [posixRelativePath || '.'],
-          depends,
-          versionFallback: tomlFallback({ path: relativeCargo, toml: 'package.version' }),
-          updates,
-        });
+function syncAllBlocks(doc: any, reports: any[], selfName: string) {
+  syncDeps(doc.dependencies, reports, selfName);
+  syncDeps(doc['dev-dependencies'], reports, selfName);
+  syncDeps(doc['build-dependencies'], reports, selfName);
+  if (doc.target && typeof doc.target === 'object') {
+    for (const targetVal of Object.values(doc.target)) {
+      if (targetVal && typeof targetVal === 'object') {
+        syncDeps((targetVal as any).dependencies, reports, selfName);
+        syncDeps((targetVal as any)['dev-dependencies'], reports, selfName);
+        syncDeps((targetVal as any)['build-dependencies'], reports, selfName);
       }
     }
   }
+}
 
-  return decorateList(configs);
+function createSelfUpdate(relativeCargo: string, selfName: string) {
+  return tomlUpdate(relativeCargo, (doc, report, reports) => {
+    if (doc.package) {
+      doc.package.version = report.newVersion;
+    }
+    syncAllBlocks(doc, reports, selfName);
+  });
+}
+
+function createLockUpdate(selfName: string, hasLock: boolean) {
+  return tomlUpdate('Cargo.lock', (doc, report) => {
+    if (Array.isArray(doc.package)) {
+      const pkg = doc.package.find((p: any) => p.name === selfName && !p.source && !p.checksum);
+      if (pkg) pkg.version = report.newVersion;
+    }
+  }).skipIf(() => !hasLock);
+}
+
+function createWorkspaceDepUpdate(rootCargoPath: string, selfName: string) {
+  return tomlUpdate(rootCargoPath, (doc, report) => {
+    const dep = doc.workspace?.dependencies?.[selfName];
+    if (typeof dep === 'object' && dep.version) {
+      dep.version = report.newVersion;
+    } else if (typeof dep === 'string') {
+      doc.workspace.dependencies[selfName] = report.newVersion;
+    }
+  }).skipIf((cwd) => {
+    // Only apply if the workspace dependencies definition contains the dependency
+    try {
+      const cargoPath = path.resolve(cwd, rootCargoPath);
+      if (fs.existsSync(cargoPath)) {
+        const doc = parse(fs.readFileSync(cargoPath, 'utf8')) as any;
+        return !doc.workspace?.dependencies?.[selfName];
+      }
+    } catch { }
+    return true;
+  });
+}
+
+function buildCrateConfig(
+  info: any,
+  workspaceRoot: string,
+  rootCargoPath: string,
+  localNames: Set<string>,
+  hasLock: boolean,
+  wsDeps: Record<string, any>,
+): DependencyConfig {
+  const relPath = path.relative(workspaceRoot, info.memberPath);
+  const posixPath = relPath.split(path.sep).join(path.posix.sep);
+  const relCargo = posixPath ? path.posix.join(posixPath, 'Cargo.toml') : 'Cargo.toml';
+  const depends = extractPathDependencies(info.doc, wsDeps)
+    .map((fd) => fd.name)
+    .filter((name) => localNames.has(name) && name !== info.name);
+
+  return {
+    name: info.name,
+    watch: [posixPath || '.'],
+    depends,
+    versionFallback: tomlFallback({ path: relCargo, read: (doc) => doc.package?.version }),
+    updates: [
+      createSelfUpdate(relCargo, info.name),
+      createLockUpdate(info.name, hasLock),
+      createWorkspaceDepUpdate(rootCargoPath, info.name),
+    ],
+  };
+}
+
+function coupleConfigs(configs: any[], a: string, b: string): boolean {
+  const itemA = configs.find((d) => d.name === a);
+  const itemB = configs.find((d) => d.name === b);
+  if (itemA && itemB) {
+    itemA.coupled = itemA.coupled || [];
+    itemB.coupled = itemB.coupled || [];
+    if (!itemA.coupled.includes(b)) itemA.coupled.push(b);
+    if (!itemB.coupled.includes(a)) itemB.coupled.push(a);
+  }
+  return true;
+}
+
+function scanWorkspace(workspaceRoot: string, rootDoc: any): CrateScanner {
+  const scanner = new CrateScanner(workspaceRoot, rootDoc.workspace?.dependencies || {});
+  if (rootDoc.workspace) registerWorkspaceMembers(scanner, rootDoc);
+  else if (rootDoc.package?.name) scanner.registerCrate(workspaceRoot);
+  runRecursiveDiscovery(scanner);
+  return scanner;
 }
 
 export function cargoDeps(cwd: string, options?: CargoBuilderOptions): DependencyList {
-  const rootCargo = path.join(cwd, 'Cargo.toml');
-  if (fs.existsSync(rootCargo)) {
-    const content = fs.readFileSync(rootCargo, 'utf8');
-    if (content.includes('members =')) {
-      return cargoWorkspace(cwd, options);
-    }
-    if (content.includes('package =') || content.match(/^name\s*=/m)) {
-      return cargoProject(cwd);
-    }
+  const workspaceRoot = findCargoWorkspaceRoot(cwd);
+  const rootCargo = path.join(workspaceRoot, 'Cargo.toml');
+  if (!fs.existsSync(rootCargo)) return decorateList([]);
+  try {
+    const rootDoc = parse(fs.readFileSync(rootCargo, 'utf8')) as any;
+    const scanner = scanWorkspace(workspaceRoot, rootDoc);
+    const hasLock = fs.existsSync(path.join(workspaceRoot, 'Cargo.lock'));
+    const localNames = new Set(scanner.crateInfos.map((c) => c.name));
+
+    // Calculate relative path from executing cwd to the workspace root Cargo.toml
+    const relWorkspaceRoot = path.relative(cwd, workspaceRoot);
+    const rootCargoPath = relWorkspaceRoot
+      ? path.join(relWorkspaceRoot, 'Cargo.toml')
+      : 'Cargo.toml';
+
+    const configs = scanner.crateInfos.map((info) =>
+      buildCrateConfig(
+        info,
+        workspaceRoot,
+        rootCargoPath,
+        localNames,
+        hasLock,
+        scanner.workspaceDeps,
+      ),
+    );
+    const list = decorateList(configs) as any;
+    list.couple = (a: string, b: string) => (coupleConfigs(configs, a, b) ? list : list);
+    return list;
+  } catch (e) {
+    console.warn(e);
+    return decorateList([]);
   }
-  return decorateList([]);
 }

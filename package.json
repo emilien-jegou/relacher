@@ -1,6 +1,6 @@
 {
   "name": "relacher",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Scriptable release orchestration library for monorepos",
   "type": "module",
   "private": false,
@@ -57,5 +57,11 @@
     "oxlint": "^1.64.0",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@decimalturn/toml-patch": "^2.0.0",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.6.1",
+    "yaml": "^2.9.0"
   }
 }

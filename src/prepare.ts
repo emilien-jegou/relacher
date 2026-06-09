@@ -33,12 +33,10 @@ export async function getCurrentVersion(
   vcs: VcsProvider,
   cwd: string,
 ): Promise<{ version: string | null; isFallback: boolean }> {
-  // 1. Look for releases in git history first
   const latestTag = await vcs.getLatestTag(dep.name);
   if (latestTag) {
     let version = latestTag;
 
-    // Strip package-specific prefixes (e.g., "api-v1.0.0" or "api/v1.0.0" -> "v1.0.0")
     if (version.startsWith(`${dep.name}-`)) {
       version = version.slice(dep.name.length + 1);
     } else if (version.startsWith(`${dep.name}/`)) {
@@ -48,7 +46,6 @@ export async function getCurrentVersion(
     return { version: version.replace(/^v/, ''), isFallback: false };
   }
 
-  // 2. Resolve via user-defined fallback
   if (dep.versionFallback) {
     return { version: dep.versionFallback.readFallback(cwd), isFallback: true };
   }
@@ -128,11 +125,45 @@ export function propagateBumps(sorted: IntermediateReport[], rules?: CascadeRule
   }
 }
 
+export function propagateCoupledBumps(sorted: IntermediateReport[]): void {
+  const priority: Record<BumpSize, number> = { skip: 0, patch: 1, minor: 2, major: 3 };
+  const bumps: BumpSize[] = ['skip', 'patch', 'minor', 'major'];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of sorted) {
+      const coupledNames = (item as any).coupled || [];
+      for (const name of coupledNames) {
+        const other = sorted.find((r) => r.name === name);
+        if (other) {
+          const maxPriority = Math.max(priority[item.bump], priority[other.bump]);
+          const targetBump = bumps[maxPriority]!;
+          if (item.bump !== targetBump) {
+            item.bump = targetBump;
+            changed = true;
+          }
+          if (other.bump !== targetBump) {
+            other.bump = targetBump;
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  for (const item of sorted) {
+    item.newVersion =
+      item.bump !== 'skip' ? bumpVersion(item.currentVersion, item.bump) : item.currentVersion;
+  }
+}
+
 export async function initReportItems(
   cargoDeps: DependencyConfig[],
   vcs: VcsProvider,
   sizes: SizePatterns,
   cwd: string,
+  excludeNestedWatches = false,
 ): Promise<IntermediateReport[]> {
   const reports: IntermediateReport[] = [];
   for (const dep of cargoDeps) {
@@ -140,11 +171,45 @@ export async function initReportItems(
     const isMissingVersion = currentVersion === null;
     const actualVersion = currentVersion || '0.0.0';
 
-    const commits = await vcs.getCommits(dep.name, dep.watch || []);
+    const exclude: string[] = [];
+    const watchPaths = dep.watch || [];
+
+    // Only compute exclusions if the option is explicitly enabled
+    if (excludeNestedWatches) {
+      for (const other of cargoDeps) {
+        if (other.name === dep.name) continue;
+
+        // Check if coupled
+        const isCoupled =
+          ((dep as any).coupled || []).includes(other.name) ||
+          ((other as any).coupled || []).includes(dep.name);
+        if (isCoupled) continue;
+
+        const otherWatchPaths = other.watch || [];
+        for (const wp of watchPaths) {
+          const wpNorm = path.normalize(wp).replace(/\\/g, '/');
+          for (const owp of otherWatchPaths) {
+            const owpNorm = path.normalize(owp).replace(/\\/g, '/');
+            const relative = path.relative(wpNorm, owpNorm);
+
+            const isNested =
+              relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+            if (isNested) {
+              exclude.push(owp);
+            }
+          }
+        }
+      }
+    }
+
+    const commits = await vcs.getCommits(dep.name, watchPaths, exclude);
     const selfBump = evaluateCommitsBump(commits, sizes);
 
     let isErroneous = isMissingVersion;
     for (const u of dep.updates || []) {
+      if (u._skipIf?.(cwd)) {
+        continue;
+      }
       if (u.required) {
         const filePath = path.resolve(cwd, u.path);
         if (!fs.existsSync(filePath)) {
@@ -165,7 +230,8 @@ export async function initReportItems(
       depends: dep.depends || [],
       isErroneous,
       isFirstRelease: isFallback,
-    });
+      coupled: (dep as any).coupled || [],
+    } as any);
   }
   return reports;
 }
@@ -177,9 +243,10 @@ export async function prepare(
 ): Promise<DependencyUpdateReport[]> {
   const cwd = options.cwd || process.cwd();
   const sizes = options.sizes || defaultSizes;
-  const items = await initReportItems(cargoDeps, vcs, sizes, cwd);
+  const items = await initReportItems(cargoDeps, vcs, sizes, cwd, options.excludeNestedWatches);
   const sorted = topologicalSort(items);
   propagateBumps(sorted, options.cascade);
+  propagateCoupledBumps(sorted);
   return finalizeReports(sorted);
 }
 
@@ -203,6 +270,7 @@ export function finalizeReports(sorted: IntermediateReport[]): DependencyUpdateR
     depends: item.depends,
     isErroneous: item.isErroneous,
     isFirstRelease: item.isFirstRelease,
+    coupled: (item as any).coupled || [],
   }));
 }
 

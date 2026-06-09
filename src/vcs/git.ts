@@ -43,11 +43,17 @@ export function getGitCommits(
   watch: string[],
   allTags: string[],
   cwd: string,
+  exclude: string[] = [],
 ): Commit[] {
   const lastTag = resolveGitTag(name, allTags);
-  const watchPaths = watch.join(' ');
   const range = lastTag ? `${lastTag}..HEAD` : 'HEAD';
 
+  const paths = [...watch];
+  if (exclude && exclude.length > 0) {
+    paths.push(...exclude.map((e) => `:(exclude)${e}`));
+  }
+
+  const watchPaths = paths.join(' ');
   const gitCmd = watchPaths
     ? `git log ${range} --no-show-signature --format='%H|%an|%ad|%s' --date=short -- ${watchPaths}`
     : `git log ${range} --no-show-signature --format='%H|%an|%ad|%s' --date=short`;
@@ -99,9 +105,9 @@ export class GitVcsProvider implements VcsProvider {
     return this.allTags;
   }
 
-  async getCommits(name: string, watch: string[]): Promise<Commit[]> {
+  async getCommits(name: string, watch: string[], exclude?: string[]): Promise<Commit[]> {
     const tags = this.getAllTags();
-    return getGitCommits(name, watch, tags, this.cwd);
+    return getGitCommits(name, watch, tags, this.cwd, exclude);
   }
 
   async getLatestTag(name?: string): Promise<string | null> {

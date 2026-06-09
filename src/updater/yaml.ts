@@ -1,30 +1,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser';
+import { parseDocument } from 'yaml';
 
 import type { DependencyUpdateReport } from '../types';
 
 import { type VersionFallback, updateBuilder } from '.';
 
-export type JsonFallbackParams = {
+export type YamlFallbackParams = {
   path: string;
   read: (parsed: any) => string | null | undefined;
 };
 
-export type JsonUpdateParams = (
+export type YamlUpdateParams = (
   parsed: any,
   report: DependencyUpdateReport,
   reports: DependencyUpdateReport[],
 ) => void;
 
-export const jsonFallback = (params: JsonFallbackParams): VersionFallback => ({
+export const yamlFallback = (params: YamlFallbackParams): VersionFallback => ({
   readFallback(cwd: string): string | null {
     const filePath = path.resolve(cwd, params.path);
     if (!fs.existsSync(filePath)) return null;
     try {
       const content = fs.readFileSync(filePath, 'utf8');
-      const parsed = parseJsonc(content);
+      const doc = parseDocument(content);
+      const parsed = doc.toJS();
       return params.read(parsed) ?? null;
     } catch {
       return null;
@@ -60,23 +61,15 @@ function createMutationProxy(
   });
 }
 
-export const jsonUpdate = updateBuilder<JsonUpdateParams>({
-  kind: 'json',
+export const yamlUpdate = updateBuilder<YamlUpdateParams>({
+  kind: 'yaml',
   apply({ targetPath, params, report, reports, cwd }) {
     const filePath = path.resolve(cwd, targetPath);
     if (!fs.existsSync(filePath)) return;
 
     const content = fs.readFileSync(filePath, 'utf8');
-    let parsed: any;
-    try {
-      parsed = parseJsonc(content);
-      if (parsed === undefined) {
-        throw new Error('Parsed content is undefined');
-      }
-    } catch (err) {
-      console.error(`Failed to parse JSON file at ${filePath}:`, err);
-      return;
-    }
+    const doc = parseDocument(content);
+    const parsed = doc.toJS();
 
     const modifications: Array<{ path: string[]; value: any }> = [];
     const proxy = createMutationProxy(parsed, [], (path, value) => {
@@ -88,14 +81,10 @@ export const jsonUpdate = updateBuilder<JsonUpdateParams>({
 
     if (modifications.length === 0) return;
 
-    let updatedContent = content;
     for (const mod of modifications) {
-      const edits = modify(updatedContent, mod.path, mod.value, {
-        formattingOptions: { insertSpaces: true, tabSize: 2 },
-      });
-      updatedContent = applyEdits(updatedContent, edits);
+      doc.setIn(mod.path, mod.value);
     }
 
-    fs.writeFileSync(filePath, updatedContent);
+    fs.writeFileSync(filePath, doc.toString());
   },
 });

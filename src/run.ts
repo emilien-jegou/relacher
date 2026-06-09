@@ -63,7 +63,7 @@ export async function run(
   // 1. Apply file updates
   for (const report of reports) {
     for (const u of report.updates) {
-      const filePath = path.resolve(cwd, u.path);
+      const filePath = path.resolve(cwd, u.targetPath);
       const dirPath = path.dirname(filePath);
       if (!fs.existsSync(dirPath)) {
         fs.mkdirSync(dirPath, { recursive: true });

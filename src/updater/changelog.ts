@@ -1,50 +1,46 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { ChangelogContext } from '../types';
+import { type ChangelogContext, type Commit } from '../types'; // Assuming these types are defined here
 
-import type { UpdateAction, UpdateActionResolved, UpdateActionOptions } from '.';
+import { updateBuilder, type PrepareActionFnArgs, type ApplyActionFnArgs } from './builder';
 
 export type ChangelogUpdateParams = {
-  path: string;
   global?: boolean;
   template?: (ctx: ChangelogContext) => string;
   required?: boolean;
 };
 
-export const changelogUpdate = (params: ChangelogUpdateParams): UpdateAction => ({
+// Define the type for data prepared by the 'prepare' function
+type ChangelogPreparedData = {
+  resolvedBlock: string;
+};
+
+export const changelogUpdate = updateBuilder<ChangelogUpdateParams, ChangelogPreparedData>({
   kind: 'changelog',
-  path: params.path,
-  required: params.required,
-  params,
-  prepare(data: UpdateActionOptions): UpdateActionResolved {
-    const targetCommits = params.global ? data.globalCommits : data.crateCommits;
+  prepare: ({ params, options }: PrepareActionFnArgs<ChangelogUpdateParams>) => {
+    const targetCommits = params.global ? options.globalCommits : options.crateCommits;
     const context: ChangelogContext = {
-      version: data.newVersion,
+      version: options.newVersion,
       date: new Date().toISOString().split('T')[0] ?? '',
-      commits: targetCommits,
+      commits: targetCommits || [],
     };
 
     const resolvedBlock = params.template
       ? params.template(context)
       : defaultChangelogTemplate(context);
 
-    const t = {
-      kind: 'changelog',
-      path: params.path,
-      params: {
-        ...params,
-        resolvedBlock,
-      },
-      apply(_report, _reports, cwd) {
-        const filePath = path.resolve(cwd, params.path);
-        const oldContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-        const newContent = (resolvedBlock ?? '') + '\n' + oldContent;
-        fs.writeFileSync(filePath, newContent.trim() + '\n');
-      },
-    } satisfies UpdateActionResolved;
-
-    return t;
+    return { resolvedBlock };
+  },
+  apply: ({
+    targetPath,
+    preparedData,
+    cwd,
+  }: ApplyActionFnArgs<ChangelogUpdateParams, ChangelogPreparedData>) => {
+    const filePath = path.resolve(cwd, targetPath);
+    const oldContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+    const newContent = (preparedData.resolvedBlock ?? '') + '\n' + oldContent;
+    fs.writeFileSync(filePath, newContent.trim() + '\n');
   },
 });
 
@@ -52,7 +48,7 @@ export function defaultChangelogTemplate({ version, date, commits }: ChangelogCo
   let block = `## [${version}] - ${date}\n\n`;
   if (commits.length === 0) return block + `*No notable changes.*\n`;
 
-  const groups: { breaking: string[]; feat: string[]; fix: string[]; other: string[] } = {
+  const groups: { breaking: Commit[]; feat: Commit[]; fix: Commit[]; other: Commit[] } = {
     breaking: [],
     feat: [],
     fix: [],
@@ -60,17 +56,19 @@ export function defaultChangelogTemplate({ version, date, commits }: ChangelogCo
   };
 
   for (const c of commits) {
-    const item = `- ${c.shortHash} ${c.message}`;
-    if (c.isBreaking) groups.breaking.push(item);
-    else if (c.type === 'feat') groups.feat.push(item);
-    else if (c.type === 'fix') groups.fix.push(item);
-    else groups.other.push(item);
+    if (c.isBreaking) groups.breaking.push(c);
+    else if (c.type === 'feat') groups.feat.push(c);
+    else if (c.type === 'fix') groups.fix.push(c);
+    else groups.other.push(c);
   }
 
-  if (groups.breaking.length) block += `### ⚠️ BREAKING CHANGES\n${groups.breaking.join('\n')}\n\n`;
-  if (groups.feat.length) block += `### ✨ Features\n${groups.feat.join('\n')}\n\n`;
-  if (groups.fix.length) block += `### 🐛 Bug Fixes\n${groups.fix.join('\n')}\n\n`;
-  if (groups.other.length) block += `### 🛠 Other Changes\n${groups.other.join('\n')}\n\n`;
+  const formatGroup = (arr: Commit[]) => arr.map((c) => `- ${c.shortHash} ${c.message}`).join('\n');
+
+  if (groups.breaking.length)
+    block += `### ⚠️ BREAKING CHANGES\n${formatGroup(groups.breaking)}\n\n`;
+  if (groups.feat.length) block += `### Features\n${formatGroup(groups.feat)}\n\n`;
+  if (groups.fix.length) block += `### Bug Fixes\n${formatGroup(groups.fix)}\n\n`;
+  if (groups.other.length) block += `### Other Changes\n${formatGroup(groups.other)}\n\n`;
 
   return block.trim() + '\n';
 }

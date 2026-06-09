@@ -53,8 +53,7 @@ describe('End-to-End Prepare Pipeline', () => {
 
     const configuredDeps = cargoDeps(temp.path).on('api', (c) =>
       c.update(
-        regexUpdate({
-          path: './README.md',
+        regexUpdate('./README.md', {
           search: 'v[0-9]+\\.[0-9]+\\.[0-9]+',
           replace: 'v{{version}}',
         }),
@@ -75,7 +74,7 @@ describe('End-to-End Prepare Pipeline', () => {
     const regexUp = apiReport?.updates.find((u) => u.kind === 'regex');
     expect(regexUp).toBeDefined();
     if (regexUp && regexUp.kind === 'regex') {
-      expect(regexUp.params.resolvedReplace).toBe('v2.1.1');
+      expect(regexUp.preparedData.resolvedReplace).toBe('v2.1.1');
     }
   });
 

@@ -47,10 +47,74 @@ export interface CascadeRules {
   major?: Record<BumpSize, BumpSize>;
 }
 
+/**
+ * Configuration options for the `prepare` process.
+ */
 export interface PrepareOptions {
-  sizes?: SizePatterns;
-  cascade?: CascadeRules;
+  /**
+   * The directory from which to run VCS commands and locate repository files.
+   * Defaults to `process.cwd()`.
+   *
+   * @example
+   * ```typescript
+   * const options = { cwd: "/path/to/my-workspace" };
+   * ```
+   */
   cwd?: string;
+
+  /**
+   * Custom regular expression patterns to match commit messages and categorize
+   * them into Semantic Versioning bump sizes (major, minor, patch, or skip).
+   *
+   * @example
+   * ```typescript
+   * const options = {
+   *   sizes: {
+   *     major: { pattern: "^BREAKING CHANGE" },
+   *     minor: { pattern: "^feat|^revert" },
+   *     patch: { pattern: "^fix|^refactor" },
+   *     skip: { pattern: "^chore|^docs" }
+   *   }
+   * };
+   * ```
+   */
+  sizes?: SizePatterns;
+
+  /**
+   * Custom cascade rules defining how semver bumps propagate upwards from
+   * dependencies to parent packages.
+   *
+   * For example, this decides if a `minor` bump in a sub-crate should trigger a
+   * `patch` bump in the workspace root package.
+   *
+   * @example
+   * ```typescript
+   * const options = {
+   *   cascade: {
+   *     skip: { major: "patch", minor: "patch", patch: "patch" },
+   *     patch: { major: "patch", minor: "patch", patch: "patch" },
+   *     minor: { major: "minor", minor: "minor", patch: "minor" },
+   *     major: { major: "major", minor: "major", patch: "major" }
+   *   }
+   * };
+   * ```
+   */
+  cascade?: CascadeRules;
+
+  /**
+   * Automatically subtract watch paths of sub-packages when they are physically nested
+   * inside a parent package's watch path (unless they are explicitly coupled).
+   *
+   * This prevents commits made strictly inside a sub-package (such as a procedural macro
+   * crate inside its parent crate folder) from incorrectly triggering a commit-based bump
+   * on the parent package itself.
+   *
+   * @example
+   * ```typescript
+   * const options = { excludeNestedWatches: true };
+   * ```
+   */
+  excludeNestedWatches?: boolean;
 }
 
 export interface DependencyUpdateReport {

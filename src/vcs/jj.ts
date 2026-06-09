@@ -47,10 +47,18 @@ export function getJjCommits(
   watch: string[],
   allTags: string[],
   cwd: string,
+  exclude: string[] = [],
 ): Commit[] {
   const lastTag = resolveJjTag(name, allTags);
 
-  const range = lastTag ? `"${lastTag}"..@ & ~root()` : `::@ & ~root()`;
+  let range = lastTag ? `"${lastTag}"..@ & ~root()` : `::@ & ~root()`;
+
+  // Append negative path constraints to the revset range
+  if (exclude && exclude.length > 0) {
+    for (const ext of exclude) {
+      range += ` & ~file("${ext}")`;
+    }
+  }
 
   const template =
     'commit_id.short(40) ++ "|" ++ author.name() ++ "|" ++ author.timestamp().format("%Y-%m-%d") ++ "|" ++ description.first_line() ++ "\\n"';
@@ -111,9 +119,9 @@ export class JjVcsProvider implements VcsProvider {
     return this.allTags;
   }
 
-  async getCommits(name: string, watch: string[]): Promise<Commit[]> {
+  async getCommits(name: string, watch: string[], exclude?: string[]): Promise<Commit[]> {
     const tags = this.getAllTags();
-    return getJjCommits(name, watch, tags, this.cwd);
+    return getJjCommits(name, watch, tags, this.cwd, exclude);
   }
 
   async getLatestTag(name?: string): Promise<string | null> {

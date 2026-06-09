@@ -36,7 +36,7 @@ describe('Changelog templating', () => {
     };
 
     const updates = mapResolvedUpdates(
-      [changelogUpdate({ path: 'CHANGELOG.md', template: customTemplate })],
+      [changelogUpdate('CHANGELOG.md', { template: customTemplate })],
       '2.0.0',
       [dummyCommit],
       [dummyCommit],
@@ -44,6 +44,6 @@ describe('Changelog templating', () => {
 
     const update = updates[0];
     expect(update).toBeDefined();
-    expect(update!.params.resolvedBlock).toBe('# v2.0.0\n* Scope: api | Desc: add new endpoints');
+    expect(update!.preparedData.resolvedBlock).toBe('# v2.0.0\n* Scope: api | Desc: add new endpoints');
   });
 });
