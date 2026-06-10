@@ -1,23 +1,56 @@
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { DependencyConfig } from '../types';
+import type { PackageConfig } from '../types';
 import { jsonUpdate, jsonFallback } from '../updater';
 
-import { decorateList, type DependencyList } from './shared';
+import { createPackageList, type PackageList } from './shared';
+
+function isPathTracked(absolutePath: string, workspaceRoot: string): boolean {
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: workspaceRoot, stdio: 'ignore' });
+    try {
+      execSync(`git ls-files --error-unmatch "${absolutePath}"`, {
+        cwd: workspaceRoot,
+        stdio: 'ignore',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  } catch {
+    try {
+      execSync('jj root', { cwd: workspaceRoot, stdio: 'ignore' });
+      try {
+        execSync(`jj files "${absolutePath}"`, { cwd: workspaceRoot, stdio: 'ignore' });
+        return true;
+      } catch {
+        return false;
+      }
+    } catch {
+      return true;
+    }
+  }
+}
 
 /**
  * Loads a single project package configuration from package.json.
  */
-export function pnpmProject(cwd: string): DependencyList {
-  const configs: DependencyConfig[] = [];
+export function pnpmProject(cwd: string): PackageList {
+  const configs: PackageConfig[] = [];
   const pJsonPath = path.join(cwd, 'package.json');
 
   if (fs.existsSync(pJsonPath)) {
     try {
       const fileContent = fs.readFileSync(pJsonPath, 'utf8');
       const parsed = JSON.parse(fileContent);
-      if (parsed.name) {
+
+      // Skip if package is private or not tracked by the VCS
+      const isPublishable = parsed.private !== true;
+      const isTracked = isPathTracked(pJsonPath, cwd);
+
+      if (parsed.name && isPublishable && isTracked) {
         configs.push({
           name: parsed.name,
           watch: ['.'],
@@ -36,14 +69,14 @@ export function pnpmProject(cwd: string): DependencyList {
     } catch { }
   }
 
-  return decorateList(configs);
+  return createPackageList(configs);
 }
 
 /**
  * Parses pnpm-workspace.yaml to identify target members and versioning topologies.
  */
-export function pnpmWorkspace(cwd: string): DependencyList {
-  const configs: DependencyConfig[] = [];
+export function pnpmWorkspace(cwd: string): PackageList {
+  const configs: PackageConfig[] = [];
   const workspaceYamlPath = path.join(cwd, 'pnpm-workspace.yaml');
   let globPatterns: string[] = [];
 
@@ -114,7 +147,21 @@ export function pnpmWorkspace(cwd: string): DependencyList {
     }
   }
 
-  for (const info of packageInfos) {
+  const filteredPackageInfos = packageInfos.filter((info) => {
+    try {
+      const parsed = JSON.parse(info.content);
+      // Skip if package is private
+      if (parsed.private === true) return false;
+    } catch {
+      return false;
+    }
+
+    // Skip if package is not tracked by the VCS
+    const pJsonPath = path.join(info.memberPath, 'package.json');
+    return isPathTracked(pJsonPath, cwd);
+  });
+
+  for (const info of filteredPackageInfos) {
     const relativePath = path.relative(cwd, info.memberPath);
     const posixRelativePath = relativePath.split(path.sep).join(path.posix.sep);
     const relativePJson = posixRelativePath
@@ -130,7 +177,7 @@ export function pnpmWorkspace(cwd: string): DependencyList {
       ...parsed.peerDependencies,
     };
 
-    for (const other of packageInfos) {
+    for (const other of filteredPackageInfos) {
       if (other.name === info.name) continue;
       if (allDeps[other.name] !== undefined) {
         depends.push(other.name);
@@ -178,13 +225,13 @@ export function pnpmWorkspace(cwd: string): DependencyList {
     });
   }
 
-  return decorateList(configs);
+  return createPackageList(configs);
 }
 
 /**
  * Auto-detects whether the workspace configuration exists, reverting to single packages.
  */
-export function pnpmDeps(cwd: string): DependencyList {
+export function loadPnpmDeps(cwd: string): PackageList {
   const workspaceYamlPath = path.join(cwd, 'pnpm-workspace.yaml');
   if (fs.existsSync(workspaceYamlPath)) {
     return pnpmWorkspace(cwd);

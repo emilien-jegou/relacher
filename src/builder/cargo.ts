@@ -1,18 +1,13 @@
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { parse } from 'smol-toml';
 
-import type { DependencyConfig } from '../types';
+import type { PackageConfig } from '../types';
 import { tomlUpdate, tomlFallback } from '../updater';
 
-import { decorateList, type DependencyList } from './shared';
-
-declare module './shared' {
-  interface DependencyList {
-    couple(a: string, b: string): this;
-  }
-}
+import { createPackageList, type PackageList } from './shared';
 
 export interface CargoBuilderOptions { }
 
@@ -230,7 +225,7 @@ function buildCrateConfig(
   localNames: Set<string>,
   hasLock: boolean,
   wsDeps: Record<string, any>,
-): DependencyConfig {
+): PackageConfig {
   const relPath = path.relative(workspaceRoot, info.memberPath);
   const posixPath = relPath.split(path.sep).join(path.posix.sep);
   const relCargo = posixPath ? path.posix.join(posixPath, 'Cargo.toml') : 'Cargo.toml';
@@ -251,18 +246,6 @@ function buildCrateConfig(
   };
 }
 
-function coupleConfigs(configs: any[], a: string, b: string): boolean {
-  const itemA = configs.find((d) => d.name === a);
-  const itemB = configs.find((d) => d.name === b);
-  if (itemA && itemB) {
-    itemA.coupled = itemA.coupled || [];
-    itemB.coupled = itemB.coupled || [];
-    if (!itemA.coupled.includes(b)) itemA.coupled.push(b);
-    if (!itemB.coupled.includes(a)) itemB.coupled.push(a);
-  }
-  return true;
-}
-
 function scanWorkspace(workspaceRoot: string, rootDoc: any): CrateScanner {
   const scanner = new CrateScanner(workspaceRoot, rootDoc.workspace?.dependencies || {});
   if (rootDoc.workspace) registerWorkspaceMembers(scanner, rootDoc);
@@ -271,15 +254,54 @@ function scanWorkspace(workspaceRoot: string, rootDoc: any): CrateScanner {
   return scanner;
 }
 
-export function cargoDeps(cwd: string, options?: CargoBuilderOptions): DependencyList {
+function isPathTracked(absolutePath: string, workspaceRoot: string): boolean {
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: workspaceRoot, stdio: 'ignore' });
+    try {
+      execSync(`git ls-files --error-unmatch "${absolutePath}"`, {
+        cwd: workspaceRoot,
+        stdio: 'ignore',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  } catch {
+    try {
+      execSync('jj root', { cwd: workspaceRoot, stdio: 'ignore' });
+      try {
+        execSync(`jj files "${absolutePath}"`, { cwd: workspaceRoot, stdio: 'ignore' });
+        return true;
+      } catch {
+        return false;
+      }
+    } catch {
+      return true;
+    }
+  }
+}
+
+export function loadCargoDeps(cwd: string, options?: CargoBuilderOptions): PackageList {
   const workspaceRoot = findCargoWorkspaceRoot(cwd);
   const rootCargo = path.join(workspaceRoot, 'Cargo.toml');
-  if (!fs.existsSync(rootCargo)) return decorateList([]);
+  if (!fs.existsSync(rootCargo)) return createPackageList([]);
   try {
     const rootDoc = parse(fs.readFileSync(rootCargo, 'utf8')) as any;
     const scanner = scanWorkspace(workspaceRoot, rootDoc);
     const hasLock = fs.existsSync(path.join(workspaceRoot, 'Cargo.lock'));
-    const localNames = new Set(scanner.crateInfos.map((c) => c.name));
+
+    const filteredCrates = scanner.crateInfos.filter((info) => {
+      // Skip if package is not meant to be published
+      const publishVal = info.doc?.package?.publish;
+      if (publishVal === false) return false;
+      if (Array.isArray(publishVal) && publishVal.length === 0) return false;
+
+      // Skip if package is not tracked by the VCS
+      const cargoPath = path.join(info.memberPath, 'Cargo.toml');
+      return isPathTracked(cargoPath, workspaceRoot);
+    });
+
+    const localNames = new Set(filteredCrates.map((c) => c.name));
 
     // Calculate relative path from executing cwd to the workspace root Cargo.toml
     const relWorkspaceRoot = path.relative(cwd, workspaceRoot);
@@ -287,7 +309,7 @@ export function cargoDeps(cwd: string, options?: CargoBuilderOptions): Dependenc
       ? path.join(relWorkspaceRoot, 'Cargo.toml')
       : 'Cargo.toml';
 
-    const configs = scanner.crateInfos.map((info) =>
+    const configs = filteredCrates.map((info) =>
       buildCrateConfig(
         info,
         workspaceRoot,
@@ -297,11 +319,10 @@ export function cargoDeps(cwd: string, options?: CargoBuilderOptions): Dependenc
         scanner.workspaceDeps,
       ),
     );
-    const list = decorateList(configs) as any;
-    list.couple = (a: string, b: string) => (coupleConfigs(configs, a, b) ? list : list);
-    return list;
+
+    return createPackageList(configs);
   } catch (e) {
     console.warn(e);
-    return decorateList([]);
+    return createPackageList([]);
   }
 }

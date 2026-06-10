@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 
-import type { DependencyUpdateReport, IntermediateReport, BumpSize } from '../../src/types';
+import type { DependencyUpdateReport, IntermediateReport } from '../../src/types';
+import type { BumpSize } from '../../src/versioning/types';
 
 export class ReportTester {
   constructor(private reports: (DependencyUpdateReport | IntermediateReport)[]) { }
@@ -53,9 +54,9 @@ export class ReportTester {
   }
 
   private dumpState(context: string) {
-    console.error(`\n\x1b[31m[DEBUG] Validation failed: Expected ${context}.\x1b[0m`);
     console.error(`\x1b[33mCurrent state of Reports:\x1b[0m`);
     console.dir(this.reports, { depth: null, colors: true });
+    console.error(`\n\x1b[31m[DEBUG] Validation failed: Expected ${context}.\x1b[0m`);
   }
 }
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { cargoDeps } from '../src/builder';
+import { loadCargoDeps } from '../src/builder';
 import { regexUpdate, type UpdateAction } from '../src/updater';
 
 import { mktemp, repo } from './utils/repo';
@@ -90,7 +90,7 @@ describe('Cargo Workspace Builder', () => {
     using temp = mktemp();
     initMockWorkspace(temp.path);
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
 
     expect(deps).toBeArray();
     expect(deps).toHaveLength(2);
@@ -141,7 +141,7 @@ ratatui = "0.30"
         ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     const math = deps.find((d) => d.name === 'math');
     expect(math).toBeDefined();
 
@@ -192,7 +192,7 @@ math = { path = "crates/math", version = "0.1.0" }
 
     // Run cargoDeps from the deep package directory
     const runDir = path.join(temp.path, 'workspace/crates/math');
-    const deps = cargoDeps(runDir);
+    const deps = loadCargoDeps(runDir);
     const math = deps.find((d) => d.name === 'math');
     expect(math).toBeDefined();
 
@@ -227,7 +227,7 @@ math = { path = "crates/math", version = "0.1.0" }
     using temp = mktemp();
     initNestedMockWorkspace(temp.path);
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
 
     expect(deps).toBeArray();
     expect(deps).toHaveLength(2);
@@ -251,13 +251,12 @@ math = { path = "crates/math", version = "0.1.0" }
     using temp = mktemp();
     initMockWorkspace(temp.path);
 
-    const deps = cargoDeps(temp.path).on('server', (c) =>
-      c.update(
-        regexUpdate('./Dockerfile', {
-          search: 'v.*',
-          replace: 'v{{version}}',
-        }),
-      ),
+    const deps = loadCargoDeps(temp.path).onPackageBump(
+      'server',
+      regexUpdate('./Dockerfile', {
+        search: 'v.*',
+        replace: 'v{{version}}',
+      }),
     );
 
     const server = deps.find((d) => d.name === 'server');
@@ -287,7 +286,7 @@ memchr = "2.5"
 
     fs.writeFileSync(filePath, originalToml, 'utf8');
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     const math = deps.find((d) => d.name === 'math');
     const update = math?.updates?.find((u) => u.kind === 'toml' && u.path === 'Cargo.toml');
 

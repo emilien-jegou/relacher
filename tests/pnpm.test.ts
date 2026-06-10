@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { pnpmDeps, pnpmProject, pnpmWorkspace } from '../src/builder/pnpm';
+import { loadPnpmDeps, pnpmProject, pnpmWorkspace } from '../src/builder/pnpm';
 
 describe('PNPM Builder Pipeline', () => {
   let tempDir: string;
@@ -118,7 +118,7 @@ packages:
       JSON.stringify({ name: 'isolated-project' }),
     );
 
-    let list = pnpmDeps(tempDir);
+    let list = loadPnpmDeps(tempDir);
     expect(list).toHaveLength(1);
     expect(list[0]).toBeDefined();
     expect(list[0]!.name).toBe('isolated-project');
@@ -137,7 +137,7 @@ packages:
       JSON.stringify({ name: 'engine-pkg' }),
     );
 
-    list = pnpmDeps(tempDir);
+    list = loadPnpmDeps(tempDir);
     expect(list).toHaveLength(1);
     expect(list[0]).toBeDefined();
     expect(list[0]!.name).toBe('engine-pkg');

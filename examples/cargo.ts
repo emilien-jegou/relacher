@@ -1,7 +1,35 @@
-import { prepare, cargoDeps, prettyPrint, run, runGit, JjVcsProvider } from '../src';
+import { Effect, pipe } from 'effect';
+
+import {
+  prepare,
+  loadCargoDeps,
+  prettyPrint,
+  run,
+  runGit,
+  VcsProviderService,
+  printDependencyList,
+} from '../src';
 import type { ChangelogContext } from '../src';
 import { changelogUpdate, regexUpdate } from '../src/updater';
+import { makeJjVcsProvider } from '../src/vcs/jj';
+import { makeVcsVersionManager, VersionManagerService } from '../src/versioning';
 import { mktemp, repo, toml } from '../tests/utils';
+
+// ANSI Escape Codes for Terminal Colors
+const c = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  gray: '\x1b[90m',
+};
+
+const step = (msg: string) => console.log(`\n${c.bold}${c.blue}▶ ${msg}${c.reset}`);
 
 // Utility helper to group an array of objects by a string property
 function groupBy<T, K extends keyof T>(arr: T[], key: K): Record<string, T[]> {
@@ -37,13 +65,10 @@ function cliffTemplate({ version, date, commits }: ChangelogContext): string {
   return lines.join('\n');
 }
 
-async function runComplexExample(): Promise<void> {
+const runComplexExample = Effect.gen(function*() {
   const temp = mktemp();
   const tempDir = temp.path;
 
-  // ==========================================================
-  // CYCLE 1: INITIAL STAGE & CYCLE 1 COMMITS
-  // ==========================================================
   repo(tempDir)
     .commit('chore: base workspace setup', (c) =>
       c
@@ -95,36 +120,32 @@ async function runComplexExample(): Promise<void> {
       c.update('crates/cli_tool/src/main.rs', (x) => x + '\n// trivial doc fix'),
     );
 
-  console.log('\n\x1b[1m=== RELEASE CYCLE 1: INITIAL STAGE ===\x1b[0m');
+  step('RELEASE CYCLE 1');
 
-  const CargoDeps1 = cargoDeps(tempDir).on('cli_tool', (c) =>
-    c
-      .update(
-        regexUpdate('./flake.nix', {
-          search: 'version = "[^"]+"',
-          replace: 'version = "{{version}}"',
-        }),
-      )
-      .update(
-        regexUpdate('./README.md', {
-          search: 'CLI Tool v[^\\s]+',
-          replace: 'CLI Tool v{{version}}',
-        }),
-      )
-      .update(changelogUpdate('./crates/cli_tool/CHANGELOG.md', {}))
-      .update(
-        changelogUpdate('./CHANGELOG.md', {
-          global: true,
-          template: cliffTemplate,
-        }),
-      ),
+  const workspaceDeps1 = loadCargoDeps(tempDir).onPackageBump(
+    'cli_tool',
+    regexUpdate('./flake.nix', {
+      search: 'version = "[^"]+"',
+      replace: 'version = "{{version}}"',
+    }),
+    regexUpdate('./README.md', {
+      onlyOn: ['major', 'minor', 'patch'],
+      search: 'CLI Tool v[^\\s]+',
+      replace: 'CLI Tool v{{version}}',
+    }),
+    changelogUpdate('./crates/cli_tool/CHANGELOG.md', {
+      onlyOn: ['major', 'minor', 'patch'],
+    }),
+    changelogUpdate('./CHANGELOG.md', {
+      onlyOn: ['major', 'minor', 'patch'],
+      global: true,
+      template: cliffTemplate,
+    }),
   );
 
-  const vcs1 = new JjVcsProvider(tempDir);
-  // const vcs1 = new GitVcsProvider(tempDir);
+  const vcs1 = makeJjVcsProvider(tempDir);
 
-  const updates1 = await prepare(CargoDeps1, vcs1, {
-    cwd: tempDir,
+  const vm1 = makeVcsVersionManager(vcs1, {
     sizes: {
       major: { pattern: '^[a-z]+(?:\\([^)]+\\))?!:|BREAKING CHANGE' },
       minor: { pattern: '^feat|^revert' },
@@ -141,16 +162,24 @@ async function runComplexExample(): Promise<void> {
     },
   });
 
+  step('Printing dependency list');
+  printDependencyList(workspaceDeps1);
+
+  const updates1 = yield* prepare(workspaceDeps1, {
+    cwd: tempDir,
+  }).pipe(Effect.provideService(VersionManagerService, vm1));
+
+  step('RELEASE LIST');
   prettyPrint(updates1);
 
   // Apply Cycle 1 Updates (Modifies workspace files, commits, and creates core_lib-v2.0.0, etc.)
-  await run(updates1, vcs1, { cwd: tempDir });
-  console.log(`\n\x1b[1m✅ Cycle 1 Release applied successfully.\x1b[0m`);
+  yield* run(updates1, { cwd: tempDir }).pipe(Effect.provideService(VcsProviderService, vcs1));
+  step('✅ Cycle 1 Release applied successfully.');
 
   // ==========================================================
   // CYCLE 2: RESUME WORK & CYCLE 2 COMMITS
   // ==========================================================
-  console.log('\n\x1b[1m=== DEVELOPMENT RESUMES: CYCLE 2 ===\x1b[0m');
+  step('DEVELOPMENT RESUMES: CYCLE 2');
 
   repo(tempDir)
     .commit('fix(core): resolve core engine thread contention', (c) =>
@@ -167,35 +196,27 @@ async function runComplexExample(): Promise<void> {
     );
 
   // Re-discover dependencies (reads the fresh version configurations written by the first cycle)
-  const CargoDeps2 = cargoDeps(tempDir).on('cli_tool', (c) =>
-    c
-      .update(
-        regexUpdate('./flake.nix', {
-          search: 'version = "[^"]+"',
-          replace: 'version = "{{version}}"',
-        }),
-      )
-      .update(
-        regexUpdate('./README.md', {
-          search: 'CLI Tool v[^\\s]+',
-          replace: 'CLI Tool v{{version}}',
-        }),
-      )
-      .update(changelogUpdate('./crates/cli_tool/CHANGELOG.md', {}))
-      .update(
-        changelogUpdate('./CHANGELOG.md', {
-          global: true,
-          template: cliffTemplate,
-        }),
-      ),
+  const workspaceDeps2 = loadCargoDeps(tempDir).onPackageBump(
+    'cli_tool',
+    regexUpdate('./flake.nix', {
+      search: 'version = "[^"]+"',
+      replace: 'version = "{{version}}"',
+    }),
+    regexUpdate('./README.md', {
+      search: 'CLI Tool v[^\\s]+',
+      replace: 'CLI Tool v{{version}}',
+    }),
+    changelogUpdate('./crates/cli_tool/CHANGELOG.md', {}),
+    changelogUpdate('./CHANGELOG.md', {
+      global: true,
+      template: cliffTemplate,
+    }),
   );
 
   // Re-instantiate the VCS Provider to pick up newly added commits and release tags
-  const vcs2 = new JjVcsProvider(tempDir);
-  //const vcs2 = new GitVcsProvider(tempDir);
+  const vcs2 = makeJjVcsProvider(tempDir);
 
-  const updates2 = await prepare(CargoDeps2, vcs2, {
-    cwd: tempDir,
+  const vm2 = makeVcsVersionManager(vcs2, {
     sizes: {
       major: { pattern: '^[a-z]+(?:\\([^)]+\\))?!:|BREAKING CHANGE' },
       minor: { pattern: '^feat|^revert' },
@@ -212,21 +233,25 @@ async function runComplexExample(): Promise<void> {
     },
   });
 
+  const updates2 = yield* prepare(workspaceDeps2, {
+    cwd: tempDir,
+  }).pipe(Effect.provideService(VersionManagerService, vm2));
+
   prettyPrint(updates2);
 
   // Apply Cycle 2 Updates (Creates core_lib-v2.0.1, cli_tool-v3.3.0, etc.)
-  await run(updates2, vcs2, { cwd: tempDir });
-  console.log(`\n\x1b[1m✅ Cycle 2 Release applied successfully.\x1b[0m`);
+  yield* run(updates2, { cwd: tempDir }).pipe(Effect.provideService(VcsProviderService, vcs2));
+  step(`✅ Cycle 2 Release applied successfully.`);
 
   // ==========================================================
   // FINAL HISTORY VERIFICATION
   // ==========================================================
   console.log(`\n\x1b[1m📊 Final Git History (Last 4 Commits):\x1b[0m`);
-  console.log(runGit('git log --oneline -n 4', tempDir));
+  console.log(yield* runGit('git log --oneline -n 4', tempDir));
   console.log(`\n\x1b[1m🏷 Final Tags Created:\x1b[0m`);
-  console.log(runGit('git tag -l "*-v*"', tempDir));
+  console.log(yield* runGit('git tag -l "*-v*"', tempDir));
 
   console.log('Repo:', tempDir);
-}
+});
 
-runComplexExample().catch(console.error);
+await Effect.runPromise(runComplexExample).catch(console.error);

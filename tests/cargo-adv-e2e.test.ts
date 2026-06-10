@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'bun:test';
-import fs from 'node:fs';
 import path from 'node:path';
 
-import { cargoDeps } from '../src/builder';
+import { Effect } from 'effect';
+
+import { loadCargoDeps } from '../src/builder';
 import { prepare } from '../src/prepare';
-import { JjVcsProvider } from '../src/vcs/jj';
+import { makeJjVcsProvider } from '../src/vcs/jj';
+import { makeVcsVersionManager, VersionManagerService } from '../src/versioning';
 
 import { mktemp, repo } from './utils/repo';
 import { toml } from './utils/toml';
@@ -43,7 +45,7 @@ describe('Advanced Cargo Workspace Builder & Graph Resolver', () => {
         ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     expect(deps).toHaveLength(2);
 
     const server = deps.find((d) => d.name === 'server');
@@ -74,7 +76,7 @@ linux-helper = { path = "../../libs/linux-helper" }
         ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     expect(deps).toHaveLength(2);
 
     const app = deps.find((d) => d.name === 'app');
@@ -100,7 +102,7 @@ linux-helper = { path = "../../libs/linux-helper" }
         ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     expect(deps).toHaveLength(2);
     expect(deps.map((d) => d.name)).toContainValues(['app', 'helper']);
   });
@@ -133,17 +135,24 @@ linux-helper = { path = "../../libs/linux-helper" }
       c.update('crates/oyui-tasker/derive/src/lib.rs', () => '// new macro rule'),
     );
 
-    const vcs = new JjVcsProvider(temp.path);
-    const deps = cargoDeps(temp.path); // Not coupled!
+    const vcs = makeJjVcsProvider(temp.path);
+    const deps = loadCargoDeps(temp.path); // Not coupled!
 
-    const reports = await prepare(deps, vcs, {
-      cwd: temp.path,
-      sizes,
-      excludeNestedWatches: true,
-    });
+    const vm = makeVcsVersionManager(vcs, { sizes });
 
-    const parent = reports.find((x) => x.name === 'oyui-tasker');
-    const derive = reports.find((x) => x.name === 'oyui-tasker-derive');
+    const reports = await Effect.runPromise(
+      Effect.provideService(
+        prepare(deps, {
+          cwd: temp.path,
+          excludeNestedWatches: true,
+        }),
+        VersionManagerService,
+        vm,
+      ),
+    );
+
+    const parent = reports.deps.find((x) => x.name === 'oyui-tasker');
+    const derive = reports.deps.find((x) => x.name === 'oyui-tasker-derive');
 
     expect(parent).toBeDefined();
     expect(derive).toBeDefined();
@@ -182,7 +191,7 @@ members = ["crates/*"]
         ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     expect(deps).toHaveLength(2);
 
     const rootApp = deps.find((d) => d.name === 'root-app');
@@ -210,7 +219,7 @@ members = ["crates/*"]
     );
 
     const runDir = path.join(temp.path, 'workspace/crates/server');
-    const deps = cargoDeps(runDir);
+    const deps = loadCargoDeps(runDir);
 
     expect(deps).toHaveLength(2);
     expect(deps.map((d) => d.name)).toContainValues(['math', 'server']);
@@ -224,7 +233,7 @@ members = ["crates/*"]
       ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     expect(deps).toHaveLength(1);
     expect(deps[0]?.name).toBe('single-crate');
     expect(deps[0]?.watch).toEqual(['.']);
@@ -258,7 +267,7 @@ members = ["crates/*"]
         ),
     );
 
-    const deps = cargoDeps(temp.path);
+    const deps = loadCargoDeps(temp.path);
     expect(deps).toHaveLength(3);
 
     const app = deps.find((d) => d.name === 'app');
@@ -300,13 +309,17 @@ members = ["crates/*"]
       c.update('crates/oyui-tasker/src/lib.rs', () => '// new feature'),
     );
 
-    const vcs = new JjVcsProvider(temp.path);
-    const deps = cargoDeps(temp.path).couple('oyui-tasker', 'oyui-tasker-derive');
+    const vcs = makeJjVcsProvider(temp.path);
+    const deps = loadCargoDeps(temp.path).couple('oyui-tasker', 'oyui-tasker-derive');
 
-    const reports = await prepare(deps, vcs, { cwd: temp.path, sizes });
+    const vm = makeVcsVersionManager(vcs, { sizes });
 
-    const parent = reports.find((x) => x.name === 'oyui-tasker');
-    const derive = reports.find((x) => x.name === 'oyui-tasker-derive');
+    const reports = await Effect.runPromise(
+      Effect.provideService(prepare(deps, { cwd: temp.path }), VersionManagerService, vm),
+    );
+
+    const parent = reports.deps.find((x) => x.name === 'oyui-tasker');
+    const derive = reports.deps.find((x) => x.name === 'oyui-tasker-derive');
 
     expect(parent).toBeDefined();
     expect(derive).toBeDefined();

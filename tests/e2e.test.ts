@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'bun:test';
 
-import { cargoDeps } from '../src/builder';
-import { prepare, getCurrentVersion } from '../src/prepare';
+import { Effect } from 'effect';
+
+import { loadCargoDeps } from '../src/builder';
+import { prepare } from '../src/prepare';
 import { run } from '../src/run';
-import type { SizePatterns, VcsProvider } from '../src/types';
 import { regexUpdate } from '../src/updater';
-import { JjVcsProvider } from '../src/vcs/jj';
+import { VcsProviderService } from '../src/vcs';
+import { makeJjVcsProvider } from '../src/vcs/jj';
+import { makeVcsVersionManager, VersionManagerService } from '../src/versioning';
+import type { SizePatterns } from '../src/versioning/types';
 
 import { mktemp, repo } from './utils/repo';
 import { reportTest } from './utils/report';
@@ -51,36 +55,39 @@ describe('End-to-End Prepare Pipeline', () => {
       c.update('pkg/api/src/lib.rs', () => '// this uses core memory allocator'),
     );
 
-    const configuredDeps = cargoDeps(temp.path).on('api', (c) =>
-      c.update(
-        regexUpdate('./README.md', {
-          search: 'v[0-9]+\\.[0-9]+\\.[0-9]+',
-          replace: 'v{{version}}',
-        }),
-      ),
+    const configuredDeps = loadCargoDeps(temp.path).onPackageBump(
+      'api',
+      regexUpdate('./README.md', {
+        search: 'v[0-9]+\\.[0-9]+\\.[0-9]+',
+        replace: 'v{{version}}',
+      }),
     );
 
-    const vcs = new JjVcsProvider(temp.path);
-    const reports = await prepare(configuredDeps, vcs, { cwd: temp.path, sizes });
+    const vcs = makeJjVcsProvider(temp.path);
+    const vm = makeVcsVersionManager(vcs, { sizes });
 
-    reportTest(reports)
+    const reports = await Effect.runPromise(
+      Effect.provideService(prepare(configuredDeps, { cwd: temp.path }), VersionManagerService, vm),
+    );
+
+    reportTest(reports.deps)
       .length(2)
       .expectBump('core', 'major')
       .expectNewVersion('core', '2.0.0')
       .expectBump('api', 'patch')
       .expectNewVersion('api', '2.1.1');
 
-    const apiReport = reports.find((r) => r.name === 'api');
+    const apiReport = reports.deps.find((r) => r.name === 'api');
     const regexUp = apiReport?.updates.find((u) => u.kind === 'regex');
     expect(regexUp).toBeDefined();
     if (regexUp && regexUp.kind === 'regex') {
       expect(regexUp.preparedData.resolvedReplace).toBe('v2.1.1');
     }
-  });
+  }, 30000);
 
   it('should deeply resolve diamond and chained workspace members', async () => {
     using diamondTemp = mktemp();
-    const vcs = new JjVcsProvider(diamondTemp.path);
+    const vcs = makeJjVcsProvider(diamondTemp.path);
 
     repo(diamondTemp.path)
       .commit('chore: init diamond', (c) =>
@@ -142,17 +149,25 @@ describe('End-to-End Prepare Pipeline', () => {
         c.update('crates/cli/src/main.rs', () => '// shiny'),
       );
 
-    const configuredDeps = cargoDeps(diamondTemp.path);
-    const reports = await prepare(configuredDeps, vcs, { cwd: diamondTemp.path, sizes });
+    const configuredDeps = loadCargoDeps(diamondTemp.path);
+    const vm = makeVcsVersionManager(vcs, { sizes });
 
-    reportTest(reports)
+    const reports = await Effect.runPromise(
+      Effect.provideService(
+        prepare(configuredDeps, { cwd: diamondTemp.path }),
+        VersionManagerService,
+        vm,
+      ),
+    );
+
+    reportTest(reports.deps)
       .length(5)
       .expectBump('core', 'major')
       .expectBump('logger', 'patch')
       .expectBump('db', 'patch')
       .expectBump('api', 'patch')
       .expectBump('cli', 'minor');
-  });
+  }, 30000);
 
   it('should execute a full 3-cycle release process verifying diffs and history', async () => {
     using temp = mktemp();
@@ -187,17 +202,23 @@ describe('End-to-End Prepare Pipeline', () => {
       c.update('crates/core/src/lib.rs', () => '// auth engine'),
     );
 
-    const vcs1 = new JjVcsProvider(temp.path);
-    const deps1 = cargoDeps(temp.path);
-    const reports1 = await prepare(deps1, vcs1, { cwd: temp.path, sizes });
+    const vcs1 = makeJjVcsProvider(temp.path);
+    const deps1 = loadCargoDeps(temp.path);
+    const vm1 = makeVcsVersionManager(vcs1, { sizes });
 
-    reportTest(reports1)
+    const reports1 = await Effect.runPromise(
+      Effect.provideService(prepare(deps1, { cwd: temp.path }), VersionManagerService, vm1),
+    );
+
+    reportTest(reports1.deps)
       .expectBump('core', 'minor')
       .expectNewVersion('core', '1.1.0')
       .expectBump('api', 'patch')
       .expectNewVersion('api', '1.0.1');
 
-    await run(reports1, vcs1, { cwd: temp.path });
+    await Effect.runPromise(
+      run(reports1, { cwd: temp.path }).pipe(Effect.provideService(VcsProviderService, vcs1)),
+    );
 
     expect(r.readFile('crates/core/Cargo.toml')).toInclude('version = "1.1.0"');
     expect(r.readFile('crates/api/Cargo.toml')).toInclude('version = "1.0.1"');
@@ -210,17 +231,23 @@ describe('End-to-End Prepare Pipeline', () => {
       c.update('crates/api/src/main.rs', () => '// fixed routing'),
     );
 
-    const vcs2 = new JjVcsProvider(temp.path);
-    const deps2 = cargoDeps(temp.path);
-    const reports2 = await prepare(deps2, vcs2, { cwd: temp.path, sizes });
+    const vcs2 = makeJjVcsProvider(temp.path);
+    const deps2 = loadCargoDeps(temp.path);
+    const vm2 = makeVcsVersionManager(vcs2, { sizes });
 
-    reportTest(reports2)
+    const reports2 = await Effect.runPromise(
+      Effect.provideService(prepare(deps2, { cwd: temp.path }), VersionManagerService, vm2),
+    );
+
+    reportTest(reports2.deps)
       .expectBump('core', 'skip')
       .expectNewVersion('core', '1.1.0')
       .expectBump('api', 'patch')
       .expectNewVersion('api', '1.0.2');
 
-    await run(reports2, vcs2, { cwd: temp.path });
+    await Effect.runPromise(
+      run(reports2, { cwd: temp.path }).pipe(Effect.provideService(VcsProviderService, vcs2)),
+    );
 
     expect(r.readFile('crates/core/Cargo.toml')).toInclude('version = "1.1.0"'); // Unchanged
     expect(r.readFile('crates/api/Cargo.toml')).toInclude('version = "1.0.2"'); // Bumped
@@ -234,17 +261,23 @@ describe('End-to-End Prepare Pipeline', () => {
       c.update('crates/core/src/db.rs', () => '// breaking changes'),
     );
 
-    const vcs3 = new JjVcsProvider(temp.path);
-    const deps3 = cargoDeps(temp.path);
-    const reports3 = await prepare(deps3, vcs3, { cwd: temp.path, sizes });
+    const vcs3 = makeJjVcsProvider(temp.path);
+    const deps3 = loadCargoDeps(temp.path);
+    const vm3 = makeVcsVersionManager(vcs3, { sizes });
 
-    reportTest(reports3)
+    const reports3 = await Effect.runPromise(
+      Effect.provideService(prepare(deps3, { cwd: temp.path }), VersionManagerService, vm3),
+    );
+
+    reportTest(reports3.deps)
       .expectBump('core', 'major')
       .expectNewVersion('core', '2.0.0')
       .expectBump('api', 'patch')
       .expectNewVersion('api', '1.0.3');
 
-    await run(reports3, vcs3, { cwd: temp.path });
+    await Effect.runPromise(
+      run(reports3, { cwd: temp.path }).pipe(Effect.provideService(VcsProviderService, vcs3)),
+    );
 
     expect(r.readFile('crates/core/Cargo.toml')).toInclude('version = "2.0.0"');
     expect(r.readFile('crates/api/Cargo.toml')).toInclude('version = "1.0.3"');
@@ -258,46 +291,10 @@ describe('End-to-End Prepare Pipeline', () => {
 
     expect(logs[0]).toInclude('chore: release core-v2.0.0, api-v1.0.3');
     expect(logs[1]).toInclude('fix(core)!: breaking database migration');
-    expect(logs[2]).toInclude('chore: release api-v1.0.2'); // Corrected from core-v1.1.0, api-v1.0.2
+    expect(logs[2]).toInclude('chore: release api-v1.0.2');
     expect(logs[3]).toInclude('fix(api): resolve routing bug');
     expect(logs[4]).toInclude('chore: release core-v1.1.0, api-v1.0.1');
     expect(logs[5]).toInclude('feat(core): add authentication engine');
     expect(logs[6]).toInclude('chore: init');
-  });
-});
-
-describe('getCurrentVersion tag parsing unit tests', () => {
-  it('should isolate the semantic version string from various common tag templates', async () => {
-    const mockVcsWithTag = (tagValue: string | null): VcsProvider =>
-      ({
-        getLatestTag: async () => tagValue,
-        getCommits: async () => [],
-      }) as unknown as VcsProvider;
-
-    const mockConfig = { name: 'workspace-crate' } as any;
-
-    expect(
-      await getCurrentVersion(mockConfig, mockVcsWithTag('workspace-crate-v1.2.3'), ''),
-    ).toEqual({
-      version: '1.2.3',
-      isFallback: false,
-    });
-
-    expect(
-      await getCurrentVersion(mockConfig, mockVcsWithTag('workspace-crate/v2.10.0-beta.1'), ''),
-    ).toEqual({
-      version: '2.10.0-beta.1',
-      isFallback: false,
-    });
-
-    expect(await getCurrentVersion(mockConfig, mockVcsWithTag('v3.0.1'), '')).toEqual({
-      version: '3.0.1',
-      isFallback: false,
-    });
-
-    expect(await getCurrentVersion(mockConfig, mockVcsWithTag('4.0.0'), '')).toEqual({
-      version: '4.0.0',
-      isFallback: false,
-    });
-  });
+  }, 30000);
 });

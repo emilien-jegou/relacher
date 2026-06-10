@@ -1,13 +1,19 @@
 import { execSync } from 'node:child_process';
 
-import type { Commit, VcsProvider } from '../types';
+import { Effect, Layer } from 'effect';
 
-export function runGit(cmd: string, cwd: string): string {
-  try {
-    return execSync(cmd, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return '';
-  }
+import type { Commit } from '../types';
+
+import { VcsProviderService, type VcsProvider } from './index';
+
+export function runGit(cmd: string, cwd: string): Effect.Effect<string, never> {
+  return Effect.sync(() => {
+    try {
+      return execSync(cmd, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  });
 }
 
 function parseSemver(tag: string, prefix: string): number[] {
@@ -44,7 +50,7 @@ export function getGitCommits(
   allTags: string[],
   cwd: string,
   exclude: string[] = [],
-): Commit[] {
+): Effect.Effect<Commit[], never> {
   const lastTag = resolveGitTag(name, allTags);
   const range = lastTag ? `${lastTag}..HEAD` : 'HEAD';
 
@@ -58,82 +64,88 @@ export function getGitCommits(
     ? `git log ${range} --no-show-signature --format='%H|%an|%ad|%s' --date=short -- ${watchPaths}`
     : `git log ${range} --no-show-signature --format='%H|%an|%ad|%s' --date=short`;
 
-  return runGit(gitCmd, cwd)
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split('|');
-      const hash = parts[0] ?? '';
-      const author = parts[1] ?? '';
-      const date = parts[2] ?? '';
-      const msgParts = parts.slice(3);
-      const message = msgParts.join('|').trim();
-
-      const ccMatch = message.match(/^([a-zA-Z]+)(?:\(([^)]+)\))?(!)?:\s*(.+)$/);
-
-      const type = ccMatch ? (ccMatch[1] ?? 'other') : 'other';
-      const scope = ccMatch ? (ccMatch[2] ?? null) : null;
-      const isBreaking = (ccMatch && !!ccMatch[3]) || message.includes('BREAKING CHANGE');
-      const description = ccMatch ? (ccMatch[4] ?? message) : message;
-
-      return {
-        hash,
-        shortHash: hash.slice(0, 7),
-        author,
-        date,
-        message,
-        type,
-        scope,
-        isBreaking,
-        description,
-      };
-    });
-}
-
-export class GitVcsProvider implements VcsProvider {
-  private allTags: string[] | null = null;
-
-  constructor(private cwd: string) { }
-
-  private getAllTags(): string[] {
-    if (this.allTags === null) {
-      this.allTags = runGit('git tag', this.cwd)
+  return runGit(gitCmd, cwd).pipe(
+    Effect.map((output) =>
+      output
         .split('\n')
-        .map((t) => t.trim())
-        .filter(Boolean);
-    }
-    return this.allTags;
-  }
+        .filter(Boolean)
+        .map((line) => {
+          const parts = line.split('|');
+          const hash = parts[0] ?? '';
+          const author = parts[1] ?? '';
+          const date = parts[2] ?? '';
+          const msgParts = parts.slice(3);
+          const message = msgParts.join('|').trim();
 
-  async getCommits(name: string, watch: string[], exclude?: string[]): Promise<Commit[]> {
-    const tags = this.getAllTags();
-    return getGitCommits(name, watch, tags, this.cwd, exclude);
-  }
+          const ccMatch = message.match(/^([a-zA-Z]+)(?:\(([^)]+)\))?(!)?:\s*(.+)$/);
 
-  async getLatestTag(name?: string): Promise<string | null> {
-    const tags = this.getAllTags();
+          const type = ccMatch ? (ccMatch[1] ?? 'other') : 'other';
+          const scope = ccMatch ? (ccMatch[2] ?? null) : null;
+          const isBreaking = (ccMatch && !!ccMatch[3]) || message.includes('BREAKING CHANGE');
+          const description = ccMatch ? (ccMatch[4] ?? message) : message;
 
-    if (typeof name === 'string') {
-      // Check specific crate tag first (e.g., "my_crate-v1.0.0")
-      const specificPrefix = `${name}-v`;
-      const specificTag = findLatestTag(tags, specificPrefix);
-      if (specificTag) return specificTag.slice(specificPrefix.length);
-    } else {
-      // Fallback to global release tag (e.g., "v1.0.0")
-      const genericPrefix = 'v';
-      const genericTag = findLatestTag(tags, genericPrefix);
-      if (genericTag) return genericTag.slice(genericPrefix.length);
-    }
-
-    return null;
-  }
-
-  async commit(message: string): Promise<void> {
-    runGit('git add .', this.cwd);
-    runGit(`git commit -m "${message}"`, this.cwd);
-  }
-
-  async tag(tagName: string): Promise<void> {
-    runGit(`git tag ${tagName}`, this.cwd);
-  }
+          return {
+            hash,
+            shortHash: hash.slice(0, 7),
+            author,
+            date,
+            message,
+            type,
+            scope,
+            isBreaking,
+            description,
+          };
+        }),
+    ),
+  );
 }
+
+// Service Factory Implementation
+export function makeGitVcsProvider(cwd: string): VcsProvider {
+  const getAllTags = (): Effect.Effect<string[], never> => {
+    return runGit('git tag', cwd).pipe(
+      Effect.map((output) =>
+        output
+          .split('\n')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      ),
+    );
+  };
+
+  return VcsProviderService.of({
+    getCommits: (name, watch, exclude = []) =>
+      getAllTags().pipe(Effect.flatMap((tags) => getGitCommits(name, watch, tags, cwd, exclude))),
+
+    getLatestTag: (name) =>
+      getAllTags().pipe(
+        Effect.map((tags) => {
+          if (typeof name === 'string') {
+            const specificPrefix = `${name}-v`;
+            const specificTag = findLatestTag(tags, specificPrefix);
+            if (specificTag) return specificTag.slice(specificPrefix.length);
+          } else {
+            const genericPrefix = 'v';
+            const genericTag = findLatestTag(tags, genericPrefix);
+            if (genericTag) return genericTag.slice(genericPrefix.length);
+          }
+          return null;
+        }),
+      ),
+
+    commit: (message) =>
+      runGit('git add .', cwd).pipe(
+        Effect.flatMap(() => runGit(`git commit -m "${message}"`, cwd)),
+        Effect.asVoid,
+      ),
+
+    tag: (tagName) => runGit(`git tag ${tagName}`, cwd).pipe(Effect.asVoid),
+  });
+}
+
+// Live Layer Factory for Git
+export const GitVcsProviderLive = (cwd: string) =>
+  Layer.effect(
+    VcsProviderService,
+    Effect.sync(() => makeGitVcsProvider(cwd)),
+  );

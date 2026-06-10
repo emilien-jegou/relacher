@@ -1,38 +1,42 @@
-type TomlValue = string | number | boolean | TomlValue[] | { [key: string]: TomlValue };
+import { stringify } from 'smol-toml';
 
 export class TomlBuilder {
-  private lines: string[] = [];
+  protected data: Record<string, any> = {};
+  protected currentPath: string[] = [];
 
-  section(name: string): this {
-    if (this.lines.length > 0) {
-      this.lines.push('');
-    }
-    this.lines.push(`[${name}]`);
+  /**
+   * Set the current section context. Supports dotted paths (e.g., 'workspace.dependencies').
+   */
+  section(name: string) {
+    this.currentPath = name ? name.split('.') : [];
     return this;
   }
 
-  kv(key: string, value: TomlValue): this {
-    this.lines.push(`${key} = ${this.formatValue(value)}`);
+  /**
+   * Set a key-value pair under the current active section (or root if no section is active).
+   */
+  kv(key: string, value: any) {
+    let current = this.data;
+
+    for (const part of this.currentPath) {
+      if (!current[part] || typeof current[part] !== 'object') {
+        current[part] = {};
+      }
+      current = current[part];
+    }
+
+    current[key] = value;
     return this;
   }
 
-  private formatValue(val: TomlValue): string {
-    if (typeof val === 'string') return `"${val}"`;
-    if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-    if (Array.isArray(val)) {
-      return `[${val.map((v) => this.formatValue(v)).join(', ')}]`;
-    }
-    if (typeof val === 'object' && val !== null) {
-      // Formats objects as TOML inline tables: { key = "value" }
-      const entries = Object.entries(val).map(([k, v]) => `${k} = ${this.formatValue(v)}`);
-      return `{ ${entries.join(', ')} }`;
-    }
-    return '""';
-  }
-
+  /**
+   * Serialize the accumulated object structure to a TOML string.
+   */
   build(): string {
-    return this.lines.join('\n') + '\n';
+    return stringify(this.data);
   }
 }
 
-export const toml = () => new TomlBuilder();
+export function toml() {
+  return new TomlBuilder();
+}
