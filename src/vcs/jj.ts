@@ -1,17 +1,28 @@
 import { execSync } from 'node:child_process';
 
-import type { Commit, VcsProvider } from '../types';
+import { Effect, Layer } from 'effect';
 
-export function runJj(cmd: string, cwd: string): string {
-  try {
-    return execSync(`jj --color=never ${cmd}`, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return '';
-  }
+import type { Commit } from '../types';
+
+import { VcsProviderService, type VcsProvider } from './index';
+
+export function runJj(
+  cmd: string,
+  cwd: string,
+  opts = { withStdio: false },
+): Effect.Effect<string, never> {
+  return Effect.sync(() => {
+    try {
+      const colorFlag = opts.withStdio ? '' : '--color=never';
+      return execSync(`jj ${colorFlag} ${cmd}`, {
+        cwd,
+        encoding: 'utf8',
+        stdio: opts.withStdio ? [] : ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return '';
+    }
+  });
 }
 
 function parseSemver(tag: string, prefix: string): number[] {
@@ -48,12 +59,11 @@ export function getJjCommits(
   allTags: string[],
   cwd: string,
   exclude: string[] = [],
-): Commit[] {
+): Effect.Effect<Commit[], never> {
   const lastTag = resolveJjTag(name, allTags);
 
   let range = lastTag ? `"${lastTag}"..@ & ~root()` : `::@ & ~root()`;
 
-  // Append negative path constraints to the revset range
   if (exclude && exclude.length > 0) {
     for (const ext of exclude) {
       range += ` & ~file("${ext}")`;
@@ -68,85 +78,87 @@ export function getJjCommits(
     ? `log --no-graph -r '${range}' -T '${template}' -- ${watchPaths}`
     : `log --no-graph -r '${range}' -T '${template}'`;
 
-  return runJj(jjCmd, cwd)
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split('|');
-      const hash = parts[0] ?? '';
-      const author = parts[1] ?? '';
-      const date = parts[2] ?? '';
-      const msgParts = parts.slice(3);
-      const message = msgParts.join('|').trim();
-
-      const ccMatch = message.match(/^([a-zA-Z]+)(?:\(([^)]+)\))?(!)?:\s*(.+)$/);
-
-      const type = ccMatch ? (ccMatch[1] ?? 'other') : 'other';
-      const scope = ccMatch ? (ccMatch[2] ?? null) : null;
-      const isBreaking = (ccMatch && !!ccMatch[3]) || message.includes('BREAKING CHANGE');
-      const description = ccMatch ? (ccMatch[4] ?? message) : message;
-
-      return {
-        hash,
-        shortHash: hash.slice(0, 7),
-        author,
-        date,
-        message,
-        type,
-        scope,
-        isBreaking,
-        description,
-      };
-    });
-}
-
-export class JjVcsProvider implements VcsProvider {
-  private allTags: string[] | null = null;
-
-  constructor(private cwd: string) { }
-
-  private getAllTags(): string[] {
-    if (this.allTags === null) {
-      const raw = runJj('tag list', this.cwd);
-      this.allTags = raw
+  return runJj(jjCmd, cwd).pipe(
+    Effect.map((output) =>
+      output
         .split('\n')
+        .filter(Boolean)
         .map((line) => {
-          const parts = line.split(':');
-          return (parts[0] ?? '').trim();
-        })
-        .filter(Boolean);
-    }
-    return this.allTags;
-  }
+          const parts = line.split('|');
+          const hash = parts[0] ?? '';
+          const author = parts[1] ?? '';
+          const date = parts[2] ?? '';
+          const msgParts = parts.slice(3);
+          const message = msgParts.join('|').trim();
 
-  async getCommits(name: string, watch: string[], exclude?: string[]): Promise<Commit[]> {
-    const tags = this.getAllTags();
-    return getJjCommits(name, watch, tags, this.cwd, exclude);
-  }
+          const ccMatch = message.match(/^([a-zA-Z]+)(?:\(([^)]+)\))?(!)?:\s*(.+)$/);
 
-  async getLatestTag(name?: string): Promise<string | null> {
-    const tags = this.getAllTags();
+          const type = ccMatch ? (ccMatch[1] ?? 'other') : 'other';
+          const scope = ccMatch ? (ccMatch[2] ?? null) : null;
+          const isBreaking = (ccMatch && !!ccMatch[3]) || message.includes('BREAKING CHANGE');
+          const description = ccMatch ? (ccMatch[4] ?? message) : message;
 
-    if (typeof name === 'string') {
-      // Check specific crate tag first
-      const specificPrefix = `${name}-v`;
-      const specificTag = findLatestJjTag(tags, specificPrefix);
-      if (specificTag) return specificTag.slice(specificPrefix.length);
-    } else {
-      // Fallback to global release tag
-      const genericPrefix = 'v';
-      const genericTag = findLatestJjTag(tags, genericPrefix);
-      if (genericTag) return genericTag.slice(genericPrefix.length);
-    }
-
-    return null;
-  }
-
-  async commit(message: string): Promise<void> {
-    runJj(`commit -m "${message}"`, this.cwd);
-  }
-
-  async tag(tagName: string): Promise<void> {
-    runJj(`tag set "${tagName}" -r @- --allow-move`, this.cwd);
-  }
+          return {
+            hash,
+            shortHash: hash.slice(0, 7),
+            author,
+            date,
+            message,
+            type,
+            scope,
+            isBreaking,
+            description,
+          };
+        }),
+    ),
+  );
 }
+
+// Service Factory Implementation
+export function makeJjVcsProvider(cwd: string): VcsProvider {
+  const getAllTags = (): Effect.Effect<string[], never> => {
+    return runJj('tag list', cwd).pipe(
+      Effect.map((output) => {
+        return output
+          .split('\n')
+          .map((line) => {
+            const parts = line.split(':');
+            return (parts[0] ?? '').trim();
+          })
+          .filter(Boolean);
+      }),
+    );
+  };
+
+  return VcsProviderService.of({
+    getCommits: (name, watch, exclude = []) =>
+      getAllTags().pipe(Effect.flatMap((tags) => getJjCommits(name, watch, tags, cwd, exclude))),
+
+    getLatestTag: (name) =>
+      getAllTags().pipe(
+        Effect.map((tags) => {
+          if (typeof name === 'string') {
+            const specificPrefix = `${name}-v`;
+            const specificTag = findLatestJjTag(tags, specificPrefix);
+            if (specificTag) return specificTag.slice(specificPrefix.length);
+          } else {
+            const genericPrefix = 'v';
+            const genericTag = findLatestJjTag(tags, genericPrefix);
+            if (genericTag) return genericTag.slice(genericPrefix.length);
+          }
+          return null;
+        }),
+      ),
+
+    commit: (message) => runJj(`commit -m "${message}"`, cwd).pipe(Effect.asVoid),
+
+    tag: (tagName) => runJj(`tag set "${tagName}" -r @- --allow-move`, cwd).pipe(Effect.asVoid),
+  });
+}
+
+// Live Layer Factory for JJ
+export const JjVcsProviderLive = (cwd: string) =>
+  Layer.effect(
+    VcsProviderService,
+    Effect.sync(() => makeJjVcsProvider(cwd)),
+  );

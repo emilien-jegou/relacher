@@ -1,4 +1,5 @@
 import type { Commit, DependencyUpdateReport } from '../types';
+import type { BumpSize } from '../versioning/types';
 
 export type UpdateActionOptions = {
   newVersion: string;
@@ -18,6 +19,7 @@ export interface UpdateAction {
   kind: string;
   path: string;
   required?: boolean;
+  onlyOn?: BumpSize[];
   params: any;
   prepare(data: UpdateActionOptions): UpdateActionResolved;
   skipIf(fn: (cwd: string) => boolean): this;
@@ -48,15 +50,17 @@ export type PrepareActionFnArgs<T> = {
 
 type PrepareActionFn<T, K> = (args: PrepareActionFnArgs<T>) => K;
 
+type Layered<T> = Pick<UpdateAction, 'onlyOn' | 'required'> & T;
+
 type UpdateBuilderParams<T, K = undefined> = {
   kind: string;
-  apply: ApplyActionFn<T, K>;
-  prepare?: PrepareActionFn<T, K>;
+  apply: ApplyActionFn<Layered<T>, K>;
+  prepare?: PrepareActionFn<Layered<T>, K>;
 };
 
 export const updateBuilder =
   <T, K = undefined>({ kind, apply, prepare }: UpdateBuilderParams<T, K>) =>
-    (targetPath: string, params: T & { required?: boolean }) => {
+    (targetPath: string, params: Layered<T>) => {
       let skipIfCallback: ((cwd: string) => boolean) | undefined;
 
       const action: UpdateAction = {
@@ -64,6 +68,7 @@ export const updateBuilder =
         path: targetPath,
         params,
         required: params.required,
+        onlyOn: params.onlyOn,
         skipIf(fn: (cwd: string) => boolean) {
           skipIfCallback = fn;
           return this;

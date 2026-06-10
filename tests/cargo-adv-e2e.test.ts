@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'bun:test';
-import fs from 'node:fs';
 import path from 'node:path';
+
+import { Effect } from 'effect';
 
 import { cargoDeps } from '../src/builder';
 import { prepare } from '../src/prepare';
-import { JjVcsProvider } from '../src/vcs/jj';
+import { makeJjVcsProvider } from '../src/vcs/jj';
+import { makeVcsVersionManager, VersionManagerService } from '../src/versioning';
 
 import { mktemp, repo } from './utils/repo';
 import { toml } from './utils/toml';
@@ -133,14 +135,21 @@ linux-helper = { path = "../../libs/linux-helper" }
       c.update('crates/oyui-tasker/derive/src/lib.rs', () => '// new macro rule'),
     );
 
-    const vcs = new JjVcsProvider(temp.path);
+    const vcs = makeJjVcsProvider(temp.path);
     const deps = cargoDeps(temp.path); // Not coupled!
 
-    const reports = await prepare(deps, vcs, {
-      cwd: temp.path,
-      sizes,
-      excludeNestedWatches: true,
-    });
+    const vm = makeVcsVersionManager(vcs, { sizes });
+
+    const reports = await Effect.runPromise(
+      Effect.provideService(
+        prepare(deps, {
+          cwd: temp.path,
+          excludeNestedWatches: true,
+        }),
+        VersionManagerService,
+        vm,
+      ),
+    );
 
     const parent = reports.find((x) => x.name === 'oyui-tasker');
     const derive = reports.find((x) => x.name === 'oyui-tasker-derive');
@@ -300,10 +309,14 @@ members = ["crates/*"]
       c.update('crates/oyui-tasker/src/lib.rs', () => '// new feature'),
     );
 
-    const vcs = new JjVcsProvider(temp.path);
+    const vcs = makeJjVcsProvider(temp.path);
     const deps = cargoDeps(temp.path).couple('oyui-tasker', 'oyui-tasker-derive');
 
-    const reports = await prepare(deps, vcs, { cwd: temp.path, sizes });
+    const vm = makeVcsVersionManager(vcs, { sizes });
+
+    const reports = await Effect.runPromise(
+      Effect.provideService(prepare(deps, { cwd: temp.path }), VersionManagerService, vm),
+    );
 
     const parent = reports.find((x) => x.name === 'oyui-tasker');
     const derive = reports.find((x) => x.name === 'oyui-tasker-derive');

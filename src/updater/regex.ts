@@ -9,7 +9,6 @@ export type RegexFallbackParams = { path: string; search: string };
 export type RegexUpdateParams = {
   search: string;
   replace: string;
-  required?: boolean;
 };
 
 export const regexFallback = (params: RegexFallbackParams): VersionFallback => ({

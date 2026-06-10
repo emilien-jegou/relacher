@@ -1,11 +1,22 @@
+import { Context, Effect } from 'effect';
+
 import type { Commit } from '../types';
 
 export interface VcsProvider {
-  getCommits(name: string, watch: string[], exclude?: string[]): Promise<Commit[]>;
-  getLatestTag(name?: string): Promise<string | null>;
-  commit(message: string): Promise<void>;
-  tag(tagName: string): Promise<void>;
+  readonly getCommits: (
+    name: string,
+    watch: string[],
+    exclude?: string[],
+  ) => Effect.Effect<Commit[], Error>;
+
+  readonly getLatestTag: (name?: string) => Effect.Effect<string | null, Error>;
+
+  readonly commit: (message: string) => Effect.Effect<void, Error>;
+
+  readonly tag: (tagName: string) => Effect.Effect<void, Error>;
 }
+
+export const VcsProviderService = Context.Service<VcsProvider>('VcsProviderService');
 
 export * from './git';
 export * from './jj';

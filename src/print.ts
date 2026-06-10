@@ -1,5 +1,3 @@
-import { defaultSizes } from './default-data';
-import { matchBumpSize } from './prepare';
 import type { DependencyUpdateReport } from './types';
 
 // ANSI Escape Codes for Terminal Colors
@@ -15,6 +13,31 @@ const c = {
   cyan: '\x1b[36m',
   gray: '\x1b[90m',
 };
+
+function inferLastStableVersion(version: string): string {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?$/);
+  if (!match) return version;
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  const pre = match[4];
+
+  if (!pre) {
+    return `${major}.${minor}.${patch}`;
+  }
+
+  if (patch > 0) {
+    return `${major}.${minor}.${patch - 1}`;
+  }
+  if (minor > 0) {
+    return `${major}.${minor - 1}.0`;
+  }
+  if (major > 0) {
+    return `${major - 1}.0.0`;
+  }
+  return '0.0.0';
+}
 
 /**
  * Highlights only the changed segments of a version string.
@@ -35,6 +58,29 @@ function highlightVersion(oldV: string, newV: string): string {
   const changed = nParts.slice(matchIdx).join('.');
 
   return `${c.gray}${oldV}${c.reset} ${c.magenta}→${c.reset} ${c.gray}${common}${c.reset}${c.green}${c.bold}${changed}${c.reset}`;
+}
+
+/**
+ * Customizes version segment formatting to hide/represent pre-release details gracefully.
+ */
+function getVersionDisplay(oldV: string, newV: string, lastStableVersion?: string | null): string {
+  if (!oldV.includes('-')) {
+    return highlightVersion(oldV, newV);
+  }
+
+  const lastStable = lastStableVersion || inferLastStableVersion(oldV);
+  const highlightedTransition = highlightVersion(lastStable, newV);
+
+  const parts = highlightedTransition.split(`${c.magenta}→${c.reset}`);
+  if (parts.length === 2) {
+    const part0 = parts[0];
+    const part1 = parts[1];
+    if (part0 !== undefined && part1 !== undefined) {
+      return `${part0.trim()} ${c.gray}<${oldV}>${c.reset} ${c.magenta}→${c.reset} ${part1.trim()}`;
+    }
+  }
+
+  return `${lastStable} <${oldV}> → ${newV}`;
 }
 
 function getIconForFile(filename: string): string {
@@ -69,7 +115,7 @@ export function prettyPrint(reports: DependencyUpdateReport[]): void {
     const firstReleaseBadge = report.isFirstRelease ? ` ${c.cyan}🌱 (first release)${c.reset}` : '';
 
     process.stdout.write(
-      `${c.bold}📦 ${report.name.padEnd(12)}${c.reset} ${highlightVersion(report.currentVersion, report.newVersion)} ${bumpColor}${c.bold}[${report.bump}]${c.reset}${firstReleaseBadge}\n`,
+      `${c.bold}📦 ${report.name.padEnd(12)}${c.reset} ${getVersionDisplay(report.currentVersion, report.newVersion, report.lastStableVersion)} ${bumpColor}${c.bold}[${report.bump}]${c.reset}${firstReleaseBadge}\n`,
     );
 
     const files = report.updates.map(
@@ -80,7 +126,7 @@ export function prettyPrint(reports: DependencyUpdateReport[]): void {
 
     // 1. Show all commits since the last release with a bump marker if applicable
     for (const commit of report.commits) {
-      const commitBump = matchBumpSize(commit.message, defaultSizes);
+      const commitBump = 'skip'; //matchBumpSize(commit.message, defaultSizes);
       const affectsBump = commitBump !== 'skip';
 
       const marker = affectsBump ? `${c.green}✦${c.reset}` : `${c.gray}○${c.reset}`;

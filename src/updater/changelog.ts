@@ -8,7 +8,6 @@ import { updateBuilder, type PrepareActionFnArgs, type ApplyActionFnArgs } from 
 export type ChangelogUpdateParams = {
   global?: boolean;
   template?: (ctx: ChangelogContext) => string;
-  required?: boolean;
 };
 
 // Define the type for data prepared by the 'prepare' function

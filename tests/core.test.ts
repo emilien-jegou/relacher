@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 
-import { topologicalSort, propagateBumps } from '../src/prepare';
+import { Effect } from 'effect';
+
+import { topologicalSort } from '../src/prepare';
 import type { IntermediateReport } from '../src/types';
+import { makeVcsVersionManager } from '../src/versioning';
 
 describe('Core Logic', () => {
   describe('Graph Resolution & Cascading', () => {
@@ -23,7 +26,15 @@ describe('Core Logic', () => {
         { name: 'app', currentVersion: '1.0.0', bump: 'skip', depends: ['lib'] },
       ] as IntermediateReport[];
 
-      propagateBumps(sorted);
+      const dummyVcs = {
+        getLatestTag: () => Effect.succeed(null),
+        getCommits: () => Effect.succeed([]),
+        commit: () => Effect.void,
+        tag: () => Effect.void,
+      } as any;
+      const vm = makeVcsVersionManager(dummyVcs);
+
+      vm.propagateBumps(sorted);
 
       expect(sorted.find((s) => s.name === 'core')?.newVersion).toBe('2.0.0');
       expect(sorted.find((s) => s.name === 'lib')?.bump).toBe('patch');
@@ -62,10 +73,17 @@ describe('Core Logic', () => {
       const sorted = topologicalSort(items);
       expect(sorted.length).toBe(3); // Prove it successfully completed sorting
 
-      propagateBumps(sorted);
+      const dummyVcs = {
+        getLatestTag: () => Effect.succeed(null),
+        getCommits: () => Effect.succeed([]),
+        commit: () => Effect.void,
+        tag: () => Effect.void,
+      } as any;
+      const vm = makeVcsVersionManager(dummyVcs);
+
+      vm.propagateBumps(sorted);
 
       // 'c' had a major bump. It propagates to 'b' which propagates to 'a'.
-      // Validates cascading rules logic remains sturdy over weird dependency architectures
       expect(sorted.find((s) => s.name === 'c')?.bump).toBe('major');
       expect(sorted.find((s) => s.name === 'b')?.bump).toBe('patch');
       expect(sorted.find((s) => s.name === 'a')?.bump).toBe('patch');

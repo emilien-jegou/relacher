@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { DependencyUpdateReport, VcsProvider } from './types';
+import { Effect } from 'effect';
+
+import type { DependencyUpdateReport } from './types';
+import { VcsProviderService, type VcsProvider } from './vcs';
 
 /**
  * Builds the multi-line commit message showcasing version bumps, included commits,
@@ -43,49 +46,57 @@ export function generateCommitMessage(reports: DependencyUpdateReport[]): string
 }
 
 /**
- * Applies calculated updates to files on disk, stages, commits, and tags using the provided VcsProvider.
+ * Applies calculated updates to files on disk, stages, commits, and tags using the VcsProvider from context.
  */
-export async function run(
+export function run(
   reports: DependencyUpdateReport[],
-  vcs: VcsProvider,
   options: { cwd: string },
-): Promise<void> {
-  const erroneous = reports.filter((r) => r.isErroneous);
-  if (erroneous.length > 0) {
-    const names = erroneous.map((r) => r.name).join(', ');
-    throw new Error(
-      `Cannot run because the following packages are missing versions or required updates: ${names}`,
-    );
-  }
+): Effect.Effect<void, Error, VcsProvider> {
+  return Effect.gen(function*() {
+    const vcs = yield* VcsProviderService;
 
-  const cwd = options.cwd;
-
-  // 1. Apply file updates
-  for (const report of reports) {
-    for (const u of report.updates) {
-      const filePath = path.resolve(cwd, u.targetPath);
-      const dirPath = path.dirname(filePath);
-      if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-      }
-
-      u.apply(report, reports, cwd);
+    const erroneous = reports.filter((r) => r.isErroneous);
+    if (erroneous.length > 0) {
+      const names = erroneous.map((r) => r.name).join(', ');
+      return yield* Effect.fail(
+        new Error(
+          `Cannot run because the following packages are missing versions or required updates: ${names}`,
+        ),
+      );
     }
-  }
 
-  // 2. Build multi-line commit message
-  const commitMessage = generateCommitMessage(reports);
-  if (!commitMessage) {
-    return;
-  }
+    const cwd = options.cwd;
 
-  // 3. Stage and execute commit
-  await vcs.commit(commitMessage);
+    // 1. Apply file updates
+    for (const report of reports) {
+      for (const u of report.updates) {
+        const filePath = path.resolve(cwd, u.targetPath);
+        const dirPath = path.dirname(filePath);
+        if (!fs.existsSync(dirPath)) {
+          fs.mkdirSync(dirPath, { recursive: true });
+        }
 
-  // 4. Create tags
-  const activeReports = reports.filter((r) => r.bump !== 'skip');
-  for (const report of activeReports) {
-    const tagName = `${report.name}-v${report.newVersion}`;
-    await vcs.tag(tagName);
-  }
+        u.apply(report, reports, cwd);
+      }
+    }
+
+    // 2. Build multi-line commit message
+    const commitMessage = generateCommitMessage(reports);
+    if (!commitMessage) {
+      return;
+    }
+
+    // 3. Stage and execute commit
+    yield* vcs.commit(commitMessage);
+
+    // 4. Create tags
+    const activeReports = reports.filter((r) => r.bump !== 'skip');
+    for (const report of activeReports) {
+      if (report.skipTag) {
+        continue;
+      }
+      const tagName = `${report.name}-v${report.newVersion}`;
+      yield* vcs.tag(tagName);
+    }
+  }) as Effect.Effect<void, Error, VcsProvider>;
 }
