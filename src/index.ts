@@ -6,3 +6,5 @@ export * from './display';
 export * from './types';
 export * from './updater';
 export * from './versioning';
+export * from './lockfile';
+export * from './init';

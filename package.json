@@ -1,6 +1,6 @@
 {
   "name": "relacher",
-  "version": "0.0.5-rc.6",
+  "version": "0.0.5",
   "description": "Scriptable release orchestration library for monorepos",
   "type": "module",
   "private": false,

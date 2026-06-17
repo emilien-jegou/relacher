@@ -16,43 +16,14 @@ export function runGit(cmd: string, cwd: string): Effect.Effect<string, never> {
   });
 }
 
-function parseSemver(tag: string, prefix: string): number[] {
-  const versionStr = tag.slice(prefix.length);
-  return versionStr.split('.').map((part) => {
-    const val = Number.parseInt(part, 10);
-    return Number.isNaN(val) ? 0 : val;
-  });
-}
-
-export function findLatestTag(tags: string[], prefix: string): string | null {
-  const matching = tags.filter((t) => t.startsWith(prefix));
-  if (matching.length === 0) return null;
-  return (
-    matching.sort((a, b) => {
-      const verA = parseSemver(a, prefix);
-      const verB = parseSemver(b, prefix);
-      for (let i = 0; i < 3; i++) {
-        const diff = (verB[i] ?? 0) - (verA[i] ?? 0);
-        if (diff !== 0) return diff;
-      }
-      return 0;
-    })[0] ?? null
-  );
-}
-
-export function resolveGitTag(name: string, allTags: string[]): string | null {
-  return findLatestTag(allTags, `${name}-v`) || findLatestTag(allTags, 'v');
-}
-
 export function getGitCommits(
   name: string,
   watch: string[],
-  allTags: string[],
+  lastCommit: string | null,
   cwd: string,
   exclude: string[] = [],
 ): Effect.Effect<Commit[], never> {
-  const lastTag = resolveGitTag(name, allTags);
-  const range = lastTag ? `${lastTag}..HEAD` : 'HEAD';
+  const range = lastCommit ? `${lastCommit}..HEAD` : 'HEAD';
 
   const paths = [...watch];
   if (exclude && exclude.length > 0) {
@@ -100,38 +71,66 @@ export function getGitCommits(
   );
 }
 
+export function getGitHeadCommit(cwd: string): Effect.Effect<string, never> {
+  return runGit('git rev-parse HEAD', cwd);
+}
+
+export function findGitLastReleaseCommit(
+  packageName: string,
+  currentVersion: string,
+  cwd: string,
+): Effect.Effect<string | null, never> {
+  return runGit('git log --format="%H" -- .relacher.lock', cwd).pipe(
+    Effect.map((output) => {
+      const hashes = output
+        .split('\n')
+        .map((h) => h.trim())
+        .filter(Boolean);
+      if (hashes.length === 0) return null;
+
+      let lastMatchingHash = hashes[0] || null;
+
+      for (const hash of hashes) {
+        try {
+          const content = execSync(`git show ${hash}:.relacher.lock`, {
+            cwd,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
+          const data = JSON.parse(content);
+          const version = data.packages?.[packageName]?.version;
+
+          if (version === currentVersion) {
+            lastMatchingHash = hash;
+          } else {
+            return lastMatchingHash;
+          }
+        } catch {
+          return lastMatchingHash;
+        }
+      }
+
+      return lastMatchingHash;
+    }),
+  );
+}
+
+export function isGitDirty(cwd: string): Effect.Effect<boolean, never> {
+  return runGit('git diff --name-only', cwd).pipe(
+    Effect.map((output) => output.trim().length > 0),
+  );
+}
+
 // Service Factory Implementation
 export function makeGitVcsProvider(cwd: string): VcsProvider {
-  const getAllTags = (): Effect.Effect<string[], never> => {
-    return runGit('git tag', cwd).pipe(
-      Effect.map((output) =>
-        output
-          .split('\n')
-          .map((t) => t.trim())
-          .filter(Boolean),
-      ),
-    );
-  };
-
   return VcsProviderService.of({
-    getCommits: (name, watch, exclude = []) =>
-      getAllTags().pipe(Effect.flatMap((tags) => getGitCommits(name, watch, tags, cwd, exclude))),
+    getCommits: (name, watch, lastCommit, exclude = []) =>
+      getGitCommits(name, watch, lastCommit, cwd, exclude),
 
-    getLatestTag: (name) =>
-      getAllTags().pipe(
-        Effect.map((tags) => {
-          if (typeof name === 'string') {
-            const specificPrefix = `${name}-v`;
-            const specificTag = findLatestTag(tags, specificPrefix);
-            if (specificTag) return specificTag.slice(specificPrefix.length);
-          } else {
-            const genericPrefix = 'v';
-            const genericTag = findLatestTag(tags, genericPrefix);
-            if (genericTag) return genericTag.slice(genericPrefix.length);
-          }
-          return null;
-        }),
-      ),
+    getHeadCommit: () => getGitHeadCommit(cwd),
+
+    findLastReleaseCommit: (packageName, currentVersion) =>
+      findGitLastReleaseCommit(packageName, currentVersion, cwd),
 
     commit: (message) =>
       runGit('git add .', cwd).pipe(
@@ -139,7 +138,7 @@ export function makeGitVcsProvider(cwd: string): VcsProvider {
         Effect.asVoid,
       ),
 
-    tag: (tagName) => runGit(`git tag ${tagName}`, cwd).pipe(Effect.asVoid),
+    isDirty: () => isGitDirty(cwd),
   });
 }
 

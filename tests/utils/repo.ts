@@ -71,8 +71,28 @@ export class RepoBuilder {
     return this;
   }
 
-  tag(name: string): this {
-    this.runJj(`tag set "${name}" -r @`);
+  write_lock(tagLikeName: string): this {
+    const lastDash = tagLikeName.lastIndexOf('-v');
+    if (lastDash === -1) return this;
+    const name = tagLikeName.slice(0, lastDash);
+    const version = tagLikeName.slice(lastDash + 2);
+
+    const lockPath = path.join(this.dir, '.relacher.lock');
+    let lockData: any = { packages: {} };
+    if (fs.existsSync(lockPath)) {
+      try {
+        lockData = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      } catch {}
+    }
+    if (!lockData.packages) {
+      lockData.packages = {};
+    }
+    lockData.packages[name] = {
+      version,
+      commit: '',
+    };
+    fs.writeFileSync(lockPath, JSON.stringify(lockData, null, 2) + '\n', 'utf8');
+
     return this;
   }
 
@@ -85,15 +105,6 @@ export class RepoBuilder {
   getLogs(): string[] {
     const out = this.runJj(`log --no-graph -r '::@' -T "description.first_line() ++ '\n'"`);
     return out.split('\n').filter(Boolean);
-  }
-
-  getTags(): string[] {
-    const out = this.runJj(`tag list`);
-    return out
-      .split('\n')
-      .map((l: any) => l.split(':')[0].trim())
-      .filter(Boolean)
-      .sort();
   }
 }
 

@@ -18,6 +18,7 @@ export interface VersionManager {
   readonly getCommits: (
     dep: PackageConfig,
     excludePaths: string[],
+    cwd: string,
   ) => Effect.Effect<Commit[], Error>;
   readonly evaluateCommitsBump: (commits: Commit[]) => BumpSize;
   readonly propagateBumps: (sorted: IntermediateReport[]) => void;

@@ -1,5 +1,6 @@
 import { Effect, Layer } from 'effect';
 
+import { readLockfile } from '../lockfile';
 import { VcsProviderService, type VcsProvider } from '../vcs';
 
 import { defaultCascadeRules, defaultSizes } from './default-data';
@@ -46,28 +47,6 @@ const getBumpSizeByPriority = (priorityValue: number, originalBump: BumpSize): B
   return 'skip';
 };
 
-const getCascadeRule = (
-  original: BumpSize,
-  dependencyBump: BumpSize,
-  activeRules: Record<string, Record<string, BumpSize> | undefined>,
-): BumpSize | undefined => {
-  const origKey =
-    typeof original === 'string' ? original : original.size ? `pre-${original.size}` : 'pre';
-  const depKey =
-    typeof dependencyBump === 'string'
-      ? dependencyBump
-      : dependencyBump.size
-        ? `pre-${dependencyBump.size}`
-        : 'pre';
-
-  const rule = activeRules[origKey]?.[depKey];
-  if (rule !== undefined) return rule;
-
-  const fallBackOrigKey = typeof original === 'string' ? original : 'patch';
-  const fallBackDepKey = typeof dependencyBump === 'string' ? dependencyBump : 'patch';
-  return activeRules[fallBackOrigKey]?.[fallBackDepKey];
-};
-
 const isVersionGreater = (v1: string, v2: string): boolean => {
   const parts1 = v1.replace(/^v/, '').split('.').map(Number);
   const parts2 = v2.replace(/^v/, '').split('.').map(Number);
@@ -106,54 +85,61 @@ export const makeVcsVersionManager = (
     },
 
     getCurrentVersion: (dep, cwd) =>
-      vcs.getLatestTag(dep.name).pipe(
-        Effect.map((latestTag) => {
-          let tagVersion: string | null = null;
+      Effect.sync(() => {
+        const lockfile = readLockfile(cwd);
+        const entry = lockfile.packages?.[dep.name];
+        const lockVersion = entry?.version ?? null;
+        const lastStableFromLock = entry?.lastStableVersion ?? lockVersion;
 
-          if (latestTag) {
-            tagVersion = latestTag;
-            if (tagVersion.startsWith(`${dep.name}-`)) {
-              tagVersion = tagVersion.slice(dep.name.length + 1);
-            } else if (tagVersion.startsWith(`${dep.name}/`)) {
-              tagVersion = tagVersion.slice(dep.name.length + 1);
-            }
-            tagVersion = tagVersion.replace(/^v/, '');
-          }
+        let fallbackVersion: string | null = null;
+        if (dep.versionFallback) {
+          fallbackVersion = dep.versionFallback.readFallback(cwd);
+        }
 
-          let fallbackVersion: string | null = null;
-          if (dep.versionFallback) {
-            fallbackVersion = dep.versionFallback.readFallback(cwd);
-          }
-
-          // Prioritize workspace fallback if it holds a pre-release version equal to or exceeding the latest tag base
-          if (fallbackVersion && tagVersion) {
-            const isFallbackRC = fallbackVersion.includes('-');
-            if (isFallbackRC) {
-              const fallbackBase = fallbackVersion.split('-')[0] || '';
-              const tagBase = tagVersion.split('-')[0] || '';
-              if (fallbackBase === tagBase || isVersionGreater(fallbackBase, tagBase)) {
-                return {
-                  version: fallbackVersion,
-                  isFallback: false,
-                  lastStableVersion: tagVersion,
-                };
-              }
+        // Prioritize workspace fallback if it holds a pre-release version equal to or exceeding the lock base
+        if (fallbackVersion && lockVersion) {
+          const isFallbackRC = fallbackVersion.includes('-');
+          if (isFallbackRC) {
+            const fallbackBase = fallbackVersion.split('-')[0] || '';
+            const lockBase = lockVersion.split('-')[0] || '';
+            if (fallbackBase === lockBase || isVersionGreater(fallbackBase, lockBase)) {
+              return {
+                version: fallbackVersion,
+                isFallback: false,
+                lastStableVersion: lastStableFromLock,
+              };
             }
           }
+        }
 
-          if (tagVersion) {
-            return { version: tagVersion, isFallback: false, lastStableVersion: tagVersion };
-          }
+        if (lockVersion) {
+          return { version: lockVersion, isFallback: false, lastStableVersion: lastStableFromLock };
+        }
 
-          if (fallbackVersion) {
-            return { version: fallbackVersion, isFallback: true, lastStableVersion: null };
-          }
+        if (fallbackVersion) {
+          return { version: fallbackVersion, isFallback: true, lastStableVersion: null };
+        }
 
-          return { version: null, isFallback: false, lastStableVersion: null };
-        }),
-      ),
+        return { version: null, isFallback: false, lastStableVersion: null };
+      }),
 
-    getCommits: (dep, excludePaths) => vcs.getCommits(dep.name, dep.watch || [], excludePaths),
+    getCommits: (dep, excludePaths, cwd) => {
+      const lockfile = readLockfile(cwd);
+      const entry = lockfile.packages?.[dep.name];
+      const lockVersion = entry?.version ?? null;
+
+      if (!lockVersion) {
+        return vcs.getCommits(dep.name, dep.watch || [], null, excludePaths);
+      }
+
+      return vcs
+        .findLastReleaseCommit(dep.name, lockVersion)
+        .pipe(
+          Effect.flatMap((lastCommit) =>
+            vcs.getCommits(dep.name, dep.watch || [], lastCommit, excludePaths),
+          ),
+        );
+    },
 
     evaluateCommitsBump: (commits) => {
       let maxBump: BumpSize = 'skip';
@@ -167,28 +153,59 @@ export const makeVcsVersionManager = (
     },
 
     propagateBumps: (sorted) => {
-      const activeRules: Record<string, Record<string, BumpSize> | undefined> = {
-        skip: { ...defaultCascadeRules.skip, ...cascadeRules.skip },
-        patch: { ...defaultCascadeRules.patch, ...cascadeRules.patch },
-        minor: { ...defaultCascadeRules.minor, ...cascadeRules.minor },
-        major: { ...defaultCascadeRules.major, ...cascadeRules.major },
+      const activeRules: Record<string, BumpSize> = {
+        patch: 'patch',
+        minor: 'patch',
+        major: 'patch',
       };
 
+      // Helper to merge cascade rules from both flat and legacy nested structures defensively
+      const mergeRules = (rules: any) => {
+        if (!rules) return;
+        for (const [key, val] of Object.entries(rules)) {
+          if (typeof val === 'string') {
+            activeRules[key] = val as BumpSize;
+          } else if (val && typeof val === 'object') {
+            for (const [subKey, subVal] of Object.entries(val)) {
+              if (typeof subVal === 'string') {
+                activeRules[subKey] = subVal as BumpSize;
+              }
+            }
+          }
+        }
+      };
+
+      mergeRules(defaultCascadeRules);
+      mergeRules(cascadeRules);
+
       for (const item of sorted) {
-        let maxDepBump: BumpSize = 'skip';
+        let maxCascadedBump: BumpSize = 'skip';
+
         for (const depName of item.depends) {
           const depItem = sorted.find((r) => r.name === depName);
-          if (depItem) {
-            if (getBumpPriority(depItem.bump) > getBumpPriority(maxDepBump)) {
-              maxDepBump = depItem.bump;
+          if (depItem && depItem.bump !== 'skip') {
+            const depBumpKey =
+              typeof depItem.bump === 'string'
+                ? depItem.bump
+                : depItem.bump.kind === 'pre'
+                  ? depItem.bump.size
+                    ? `pre-${depItem.bump.size}`
+                    : 'pre'
+                  : 'patch';
+
+            const cascadedResult = activeRules[depBumpKey];
+            if (
+              cascadedResult &&
+              getBumpPriority(cascadedResult) > getBumpPriority(maxCascadedBump)
+            ) {
+              maxCascadedBump = cascadedResult;
             }
           }
         }
 
-        if (getBumpPriority(maxDepBump) > 0) {
-          const original = item.bump;
-          const targetBump = getCascadeRule(original, maxDepBump, activeRules) ?? original;
-          item.bump = targetBump;
+        // Apply the cascaded bump only if its priority exceeds the package's existing bump
+        if (getBumpPriority(maxCascadedBump) > getBumpPriority(item.bump)) {
+          item.bump = maxCascadedBump;
         }
 
         item.newVersion =

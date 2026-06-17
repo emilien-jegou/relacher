@@ -53,8 +53,19 @@ describe('Stable Version Promotion & Base Tracking', () => {
         .update('Cargo.toml', () => toml().section('workspace').kv('members', ['crates/*']).build())
         .update('crates/cli_tool/Cargo.toml', () =>
           toml().section('package').kv('name', 'cli_tool').kv('version', '3.1.2').build(),
+        )
+        .update('.relacher.lock', () =>
+          JSON.stringify(
+            {
+              packages: {
+                cli_tool: { version: '3.1.2', lastStableVersion: '3.1.2' },
+              },
+            },
+            null,
+            2,
+          ),
         ),
-    ).tag('cli_tool-v3.1.2');
+    );
 
     // ==========================================================
     // CYCLE 1: Feature on cli_tool -> v3.2.0-rc.0
@@ -71,15 +82,20 @@ describe('Stable Version Promotion & Base Tracking', () => {
       Effect.provideService(prepare(deps1, { cwd: temp.path }), VersionManagerService, vm1),
     );
 
-    reportTest(reports1.deps).expectBump('cli_tool', 'minor').expectNewVersion('cli_tool', '3.2.0-rc.0');
+    reportTest(reports1.deps)
+      .expectBump('cli_tool', 'minor')
+      .expectNewVersion('cli_tool', '3.2.0-rc.0');
 
     await Effect.runPromise(
       run(reports1, { cwd: temp.path }).pipe(Effect.provideService(VcsProviderService, vcs1)),
     );
 
-    // Verify version is updated to 3.2.0-rc.0 on disk, but no pre-release tag was created
+    // Verify version is updated to 3.2.0-rc.0 on disk
     expect(r.readFile('crates/cli_tool/Cargo.toml')).toInclude('version = "3.2.0-rc.0"');
-    expect(r.getTags()).toEqual(['cli_tool-v3.1.2']); // No pre-release tags!
+
+    // Verify lockfile version
+    const lockfile = JSON.parse(r.readFile('.relacher.lock'));
+    expect(lockfile.packages['cli_tool'].version).toBe('3.2.0-rc.0');
 
     // ==========================================================
     // CYCLE 2: Promote to stable -> v3.2.0
@@ -103,7 +119,7 @@ describe('Stable Version Promotion & Base Tracking', () => {
       // 1. Current version must be correctly read as 3.2.0-rc.0 (from Cargo.toml)
       expect(cliReport.currentVersion).toBe('3.2.0-rc.0');
 
-      // 2. The stable tag baseline must be correctly preserved as 3.1.2 (from git tags)
+      // 2. The stable tag baseline must be correctly preserved as 3.1.2 (from lockfile)
       expect(cliReport.lastStableVersion).toBe('3.1.2');
 
       // 3. The new version must be promoted to the expected minor stable release 3.2.0

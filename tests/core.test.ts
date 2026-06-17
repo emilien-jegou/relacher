@@ -37,8 +37,8 @@ describe('Core Logic', () => {
       vm.propagateBumps(sorted);
 
       expect(sorted.find((s) => s.name === 'core')?.newVersion).toBe('2.0.0');
-      expect(sorted.find((s) => s.name === 'lib')?.bump).toBe('patch');
-      expect(sorted.find((s) => s.name === 'lib')?.newVersion).toBe('1.0.1');
+      expect(sorted.find((s) => s.name === 'lib')?.bump).toBe('minor');
+      expect(sorted.find((s) => s.name === 'lib')?.newVersion).toBe('1.1.0');
       expect(sorted.find((s) => s.name === 'app')?.bump).toBe('patch');
       expect(sorted.find((s) => s.name === 'app')?.newVersion).toBe('1.0.1');
     });
@@ -85,7 +85,7 @@ describe('Core Logic', () => {
 
       // 'c' had a major bump. It propagates to 'b' which propagates to 'a'.
       expect(sorted.find((s) => s.name === 'c')?.bump).toBe('major');
-      expect(sorted.find((s) => s.name === 'b')?.bump).toBe('patch');
+      expect(sorted.find((s) => s.name === 'b')?.bump).toBe('minor');
       expect(sorted.find((s) => s.name === 'a')?.bump).toBe('patch');
     });
   });

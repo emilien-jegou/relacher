@@ -7,9 +7,9 @@ export const defaultSizes: SizePatterns = {
   skip: { pattern: '^release|^chore|^infra|^docs|^test|^ci|^build' },
 };
 
-export const defaultCascadeRules: Required<CascadeRules> = {
-  skip: { skip: 'skip', patch: 'patch', minor: 'patch', major: 'patch' },
-  patch: { skip: 'patch', patch: 'patch', minor: 'minor', major: 'minor' },
-  minor: { skip: 'minor', patch: 'minor', minor: 'minor', major: 'minor' },
-  major: { skip: 'major', patch: 'major', minor: 'major', major: 'major' },
+export const defaultCascadeRules: CascadeRules = {
+  skip: 'skip',
+  patch: 'patch',
+  minor: 'patch',
+  major: 'minor',
 };

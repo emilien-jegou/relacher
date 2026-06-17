@@ -12,10 +12,4 @@ export interface SizePatterns {
   skip: PatternConfig;
 }
 
-export interface CascadeRules {
-  skip?: Record<string, BumpSize>;
-  patch?: Record<string, BumpSize>;
-  minor?: Record<string, BumpSize>;
-  major?: Record<string, BumpSize>;
-  [key: string]: Record<string, BumpSize> | undefined;
-}
+export type CascadeRules = Record<string, BumpSize>;

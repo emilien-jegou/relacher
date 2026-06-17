@@ -1,6 +1,8 @@
 import { pipe } from 'effect';
 
 import type { PreparedUpdate } from '../types';
+import { defaultSizes } from '../versioning/default-data';
+import { matchBumpSize } from '../versioning/utils';
 
 import { getIconForFile } from './devicons';
 import { c, log } from './utils';
@@ -75,6 +77,10 @@ function getVersionDisplay(oldV: string, newV: string, lastStableVersion?: strin
 }
 
 export function prettyPrint(prepared: PreparedUpdate): void {
+  if (prepared.isDirty) {
+    log.warn('The repository has unstaged or uncommitted changes (dirty status).');
+  }
+
   if (prepared.isInvalid) {
     console.log(c.red('\nErrors detected during preparation:'));
     for (const err of prepared.errors) {
@@ -116,7 +122,7 @@ export function prettyPrint(prepared: PreparedUpdate): void {
 
     // 1. Show all commits since the last release with a bump marker if applicable
     for (const commit of report.commits) {
-      const commitBump = 'skip'; //matchBumpSize(commit.message, defaultSizes);
+      const commitBump = matchBumpSize(commit.message, defaultSizes);
       const affectsBump = commitBump !== 'skip';
 
       const marker = affectsBump ? `${c.green('✦')}` : `${c.gray('○')}`;

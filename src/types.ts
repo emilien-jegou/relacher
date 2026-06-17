@@ -41,10 +41,8 @@ export interface DependencyError {
 export type PreparedUpdate = {
   isEmpty: boolean;
   deps: DependencyUpdateReport[];
-} & (
-  | { isInvalid: true; errors: DependencyError[] }
-  | { isInvalid: false }
-);
+  isDirty?: boolean;
+} & ({ isInvalid: true; errors: DependencyError[] } | { isInvalid: false });
 
 export interface DependencyUpdateReport {
   name: string;

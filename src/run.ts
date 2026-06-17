@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { Effect } from 'effect';
 
+import { updateLockfile } from './lockfile';
 import type { DependencyUpdateReport, PreparedUpdate } from './types';
 import { VcsProviderService, type VcsProvider } from './vcs';
 
@@ -55,6 +56,12 @@ export function run(
   return Effect.gen(function*() {
     const vcs = yield* VcsProviderService;
 
+    // Check for dirty repository status
+    const isDirty = yield* vcs.isDirty();
+    if (isDirty) {
+      return yield* Effect.fail(new Error('Cannot run release: repository has dirty status.'));
+    }
+
     // Reject run early if preparation is flagged as invalid
     if (prepared.isInvalid) {
       const messages = prepared.errors
@@ -86,23 +93,16 @@ export function run(
       }
     }
 
-    // 2. Build multi-line commit message
+    // 2. Update .relacher.lock with the calculated metadata (commit argument is removed)
+    updateLockfile(cwd, reports);
+
+    // 3. Build multi-line commit message
     const commitMessage = generateCommitMessage(reports);
     if (!commitMessage) {
       return;
     }
 
-    // 3. Stage and execute commit
+    // 4. Stage and execute commit
     yield* vcs.commit(commitMessage);
-
-    // 4. Create tags
-    const activeReports = reports.filter((r) => r.bump !== 'skip');
-    for (const report of activeReports) {
-      if (report.skipTag) {
-        continue;
-      }
-      const tagName = `${report.name}-v${report.newVersion}`;
-      yield* vcs.tag(tagName);
-    }
   }) as Effect.Effect<void, Error, VcsProvider>;
 }

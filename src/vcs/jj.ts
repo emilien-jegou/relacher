@@ -25,44 +25,14 @@ export function runJj(
   });
 }
 
-function parseSemver(tag: string, prefix: string): number[] {
-  const versionStr = tag.slice(prefix.length);
-  return versionStr.split('.').map((part) => {
-    const val = Number.parseInt(part, 10);
-    return Number.isNaN(val) ? 0 : val;
-  });
-}
-
-export function findLatestJjTag(tags: string[], prefix: string): string | null {
-  const matching = tags.filter((t) => t.startsWith(prefix));
-  if (matching.length === 0) return null;
-  return (
-    matching.sort((a, b) => {
-      const verA = parseSemver(a, prefix);
-      const verB = parseSemver(b, prefix);
-      for (let i = 0; i < 3; i++) {
-        const diff = (verB[i] ?? 0) - (verA[i] ?? 0);
-        if (diff !== 0) return diff;
-      }
-      return 0;
-    })[0] ?? null
-  );
-}
-
-export function resolveJjTag(name: string, allTags: string[]): string | null {
-  return findLatestJjTag(allTags, `${name}-v`) || findLatestJjTag(allTags, 'v');
-}
-
 export function getJjCommits(
   name: string,
   watch: string[],
-  allTags: string[],
+  lastCommit: string | null,
   cwd: string,
   exclude: string[] = [],
 ): Effect.Effect<Commit[], never> {
-  const lastTag = resolveJjTag(name, allTags);
-
-  let range = lastTag ? `"${lastTag}"..@ & ~root()` : `::@ & ~root()`;
+  let range = lastCommit ? `"${lastCommit}"..@ & ~root()` : `::@ & ~root()`;
 
   if (exclude && exclude.length > 0) {
     for (const ext of exclude) {
@@ -114,45 +84,89 @@ export function getJjCommits(
   );
 }
 
+export function getJjHeadCommit(cwd: string): Effect.Effect<string, never> {
+  return runJj('log --no-graph -r @ -T commit_id', cwd);
+}
+
+export function findJjLastReleaseCommit(
+  packageName: string,
+  currentVersion: string,
+  cwd: string,
+): Effect.Effect<string | null, never> {
+  return runJj('log --no-graph -T \'commit_id ++ "\\n"\' -- .relacher.lock', cwd).pipe(
+    Effect.map((output) => {
+      const hashes = output
+        .split('\n')
+        .map((h) => h.trim())
+        .filter(Boolean);
+      if (hashes.length === 0) return null;
+
+      let lastMatchingHash: string | null = null;
+
+      for (const hash of hashes) {
+        try {
+          const content = execSync(`jj file show .relacher.lock -r ${hash}`, {
+            cwd,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
+
+          const data = JSON.parse(content);
+          const version = data.packages?.[packageName]?.version;
+
+          if (version === currentVersion) {
+            lastMatchingHash = hash;
+          } else {
+            return lastMatchingHash;
+          }
+        } catch {
+          return lastMatchingHash;
+        }
+      }
+
+      return lastMatchingHash;
+    }),
+  );
+}
+
+export function isJjDirty(cwd: string): Effect.Effect<boolean, never> {
+  return Effect.gen(function*() {
+    // 1. Check if current commit @ is not empty
+    const currentStatus = yield* runJj(
+      'log --no-graph -r @ -T \'if(empty, "empty", "not-empty")\'',
+      cwd,
+    );
+    if (currentStatus.trim() === 'not-empty') {
+      return true;
+    }
+
+    // 2. Check if there are any commits without a description in the history (excluding root and the current commit)
+    const historyDescriptions = yield* runJj(
+      'log --no-graph -r "::@ & ~@ & ~root()" -T \'if(description, "1", "0")\'',
+      cwd,
+    );
+    if (historyDescriptions.includes('0')) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
 // Service Factory Implementation
 export function makeJjVcsProvider(cwd: string): VcsProvider {
-  const getAllTags = (): Effect.Effect<string[], never> => {
-    return runJj('tag list', cwd).pipe(
-      Effect.map((output) => {
-        return output
-          .split('\n')
-          .map((line) => {
-            const parts = line.split(':');
-            return (parts[0] ?? '').trim();
-          })
-          .filter(Boolean);
-      }),
-    );
-  };
-
   return VcsProviderService.of({
-    getCommits: (name, watch, exclude = []) =>
-      getAllTags().pipe(Effect.flatMap((tags) => getJjCommits(name, watch, tags, cwd, exclude))),
+    getCommits: (name, watch, lastCommit, exclude = []) =>
+      getJjCommits(name, watch, lastCommit, cwd, exclude),
 
-    getLatestTag: (name) =>
-      getAllTags().pipe(
-        Effect.map((tags) => {
-          if (typeof name === 'string') {
-            const specificPrefix = `${name}-v`;
-            const specificTag = findLatestJjTag(tags, specificPrefix);
-            if (specificTag) return specificTag.slice(specificPrefix.length);
-          } else {
-            const genericPrefix = 'v';
-            const genericTag = findLatestJjTag(tags, genericPrefix);
-            if (genericTag) return genericTag.slice(genericPrefix.length);
-          }
-          return null;
-        }),
-      ),
+    getHeadCommit: () => getJjHeadCommit(cwd),
+
+    findLastReleaseCommit: (packageName, currentVersion) =>
+      findJjLastReleaseCommit(packageName, currentVersion, cwd),
 
     commit: (message) => runJj(`commit -m "${message}"`, cwd).pipe(Effect.asVoid),
 
-    tag: (tagName) => runJj(`tag set "${tagName}" -r @- --allow-move`, cwd).pipe(Effect.asVoid),
+    isDirty: () => isJjDirty(cwd),
   });
 }
 

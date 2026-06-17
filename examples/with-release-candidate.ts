@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { Effect } from 'effect';
 
 import {
@@ -96,8 +99,8 @@ const runRcExample = Effect.gen(function*() {
         .update('README.md', () => `# CLI Tool v3.1.2\n`),
     )
     // Mark stable release tag checkpoints
-    .tag('core_lib-v1.0.0')
-    .tag('cli_tool-v3.1.2')
+    .write_lock('core_lib-v1.0.0')
+    .write_lock('cli_tool-v3.1.2')
 
     // Simulate development leading up to Cycle 1 Release
     .commit('fix(engine)!: critical resource leak addressed', (c) =>
@@ -145,14 +148,6 @@ const runRcExample = Effect.gen(function*() {
       minor: { pattern: '^feat|^revert' },
       patch: { pattern: '^fix|^build|^refactor|^nit|^style' },
       skip: { pattern: '^release|^chore|^infra|^docs|^test|^ci|^build' },
-    },
-    cascade: {
-      patch: {
-        skip: 'patch',
-        patch: 'patch',
-        minor: 'minor',
-        major: 'minor',
-      },
     },
   });
 
@@ -209,14 +204,6 @@ const runRcExample = Effect.gen(function*() {
       patch: { pattern: '^fix|^build|^refactor|^nit|^style' },
       skip: { pattern: '^release|^chore|^infra|^docs|^test|^ci|^build' },
     },
-    cascade: {
-      patch: {
-        skip: 'patch',
-        patch: 'patch',
-        minor: 'minor',
-        major: 'minor',
-      },
-    },
   });
 
   const updates2 = yield* prepare(PnpmDeps2, {
@@ -234,8 +221,9 @@ const runRcExample = Effect.gen(function*() {
   // ==========================================================
   console.log(`\n\x1b[1m📊 Final Git History (Last 4 Commits):\x1b[0m`);
   console.log(yield* runGit('git log --oneline -n 4', tempDir));
-  console.log(`\n\x1b[1m🏷 Final Tags Created:\x1b[0m`);
-  console.log(yield* runGit('git tag -l "*-v*"', tempDir));
+  console.log(`\n\x1b[1m🏷 Final lockfile:\x1b[0m`);
+  const doc = fs.readFileSync(path.join(tempDir, '.relacher.lock'), 'utf8');
+  console.log(JSON.stringify(JSON.parse(doc)));
 
   console.log('Repo path:', tempDir);
 });

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 
 import type {
   Commit,
@@ -13,6 +13,7 @@ import type {
   DependencyError,
 } from './types';
 import type { UpdateAction, UpdateActionResolved } from './updater';
+import { VcsProviderService } from './vcs';
 import { VersionManagerService, type VersionManager } from './versioning';
 import type { BumpSize } from './versioning/types';
 
@@ -111,7 +112,8 @@ export function initReportItems(
         }
       }
 
-      const allCommits = yield* versionManager.getCommits(dep, exclude);
+      // Pass cwd to ensure it reads the correct .relacher.lock
+      const allCommits = yield* versionManager.getCommits(dep, exclude, cwd);
       let commitsSincePreRelease = [...allCommits];
 
       // Exclude commits packaged prior to the current pre-released version
@@ -189,10 +191,14 @@ export function prepare(
           name: err.name,
           message: err.message,
         })) as DependencyError[],
+        isDirty: false,
       };
     }
 
     const versionManager = yield* VersionManagerService;
+    const vcsOption = yield* Effect.serviceOption(VcsProviderService);
+    const isDirty = Option.isSome(vcsOption) ? yield* vcsOption.value.isDirty() : false;
+
     const cwd = options.cwd || process.cwd();
 
     const items = yield* initReportItems(packages, cwd, options.excludeNestedWatches);
@@ -214,6 +220,7 @@ export function prepare(
           name: r.name,
           message: `Package ${r.name} is missing a version or a required update file.`,
         })) as DependencyError[],
+        isDirty,
       };
     }
 
@@ -221,6 +228,7 @@ export function prepare(
       isEmpty,
       deps,
       isInvalid: false,
+      isDirty,
     };
   }) as Effect.Effect<PreparedUpdate, Error, VersionManager>;
 }
@@ -238,10 +246,8 @@ export function finalizeReports(
   const globalCommits = Array.from(allCommitsMap.values());
 
   return sorted.map((item) => {
-    const skipTag =
-      versionManager && versionManager.shouldTag
-        ? !versionManager.shouldTag(item.newVersion)
-        : false;
+    // Git tags are no longer managed, skipping tag operations entirely
+    const skipTag = true;
 
     // Determine the action bump (checking if output is pre-release)
     let actionBump = item.bump;

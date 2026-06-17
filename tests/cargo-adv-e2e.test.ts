@@ -125,10 +125,20 @@ linux-helper = { path = "../../libs/linux-helper" }
         )
         .update('crates/oyui-tasker/derive/Cargo.toml', () =>
           toml().section('package').kv('name', 'oyui-tasker-derive').kv('version', '0.0.7').build(),
+        )
+        .update('.relacher.lock', () =>
+          JSON.stringify(
+            {
+              packages: {
+                'oyui-tasker': { version: '0.0.7', lastStableVersion: '0.0.7' },
+                'oyui-tasker-derive': { version: '0.0.7', lastStableVersion: '0.0.7' },
+              },
+            },
+            null,
+            2,
+          ),
         ),
-    )
-      .tag('oyui-tasker-v0.0.7')
-      .tag('oyui-tasker-derive-v0.0.7');
+    );
 
     // Make a commit that ONLY touches the nested subdirectory
     r.commit('feat(oyui-tasker-derive): add procedural macro rule', (c) =>
@@ -300,10 +310,20 @@ members = ["crates/*"]
         )
         .update('crates/oyui-tasker/derive/Cargo.toml', () =>
           toml().section('package').kv('name', 'oyui-tasker-derive').kv('version', '0.0.7').build(),
+        )
+        .update('.relacher.lock', () =>
+          JSON.stringify(
+            {
+              packages: {
+                'oyui-tasker': { version: '0.0.7', lastStableVersion: '0.0.7' },
+                'oyui-tasker-derive': { version: '0.0.7', lastStableVersion: '0.0.7' },
+              },
+            },
+            null,
+            2,
+          ),
         ),
-    )
-      .tag('oyui-tasker-v0.0.7')
-      .tag('oyui-tasker-derive-v0.0.7');
+    );
 
     r.commit('feat(oyui-tasker): updating oyui', (c) =>
       c.update('crates/oyui-tasker/src/lib.rs', () => '// new feature'),
