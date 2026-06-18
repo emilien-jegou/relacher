@@ -296,11 +296,11 @@ describe('End-to-End Prepare Pipeline', () => {
     // ==========================================================
     const logs = r.getLogs();
 
-    expect(logs[0]).toInclude('chore: release core-v2.0.0, api-v1.1.0');
+    expect(logs[0]).toInclude('release: core-v2.0.0, api-v1.1.0');
     expect(logs[1]).toInclude('fix(core)!: breaking database migration');
-    expect(logs[2]).toInclude('chore: release api-v1.0.2');
+    expect(logs[2]).toInclude('release: api-v1.0.2');
     expect(logs[3]).toInclude('fix(api): resolve routing bug');
-    expect(logs[4]).toInclude('chore: release core-v1.1.0, api-v1.0.1');
+    expect(logs[4]).toInclude('release: core-v1.1.0, api-v1.0.1');
     expect(logs[5]).toInclude('feat(core): add authentication engine');
     expect(logs[6]).toInclude('chore: init');
   }, 30000);

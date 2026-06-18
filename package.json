@@ -1,11 +1,11 @@
 {
   "name": "relacher",
-  "version": "0.0.5",
-  "description": "Scriptable release orchestration library for monorepos",
-  "type": "module",
-  "private": false,
-  "author": "Emilien Jegou",
-  "license": "MIT",
+				"version": "0.0.6",
+				"description": "Scriptable release orchestration library for monorepos",
+				"type": "module",
+				"private": false,
+				"author": "Emilien Jegou",           
+				"license": "MIT",
   "homepage": "https://github.com/emilien-jegou/relache#readme",
   "repository": {
     "type": "git",
@@ -43,11 +43,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "ts:build": "tsc -p tsconfig.build.json",
-    "ts:watch": "tsc --noEmit --incremental --preserveWatchOutput --pretty --watch",
+    "ts.build": "tsc -p tsconfig.build.json",
+    "ts.watch": "tsc --noEmit --incremental --preserveWatchOutput --pretty --watch",
     "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
-    "lint:watch": "oxlint --watch",
+    "lint.fix": "oxlint --fix",
+    "lint.watch": "oxlint --watch",
     "prepublishOnly": "bun run ts:build"
   },
   "devDependencies": {

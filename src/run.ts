@@ -11,14 +11,29 @@ import { VcsProviderService, type VcsProvider } from './vcs';
  * Builds the multi-line commit message showcasing version bumps, included commits,
  * cascade triggers, and first-release indicators.
  */
-export function generateCommitMessage(reports: DependencyUpdateReport[]): string | null {
+export function generateCommitMessage(
+  reports: DependencyUpdateReport[],
+  options?: {
+    commitTitle?: (defaultTitle: string, bumps: Record<string, string>) => string;
+  },
+): string | null {
   const activeReports = reports.filter((r) => r.bump !== 'skip');
   if (activeReports.length === 0) {
     return null;
   }
 
+  const bumps: Record<string, string> = {};
+  for (const r of activeReports) {
+    bumps[r.name] = r.newVersion;
+  }
+
   const tagList = activeReports.map((r) => `${r.name}-v${r.newVersion}`).join(', ');
-  let commitMessage = `chore: release ${tagList}\n\n`;
+  const defaultTitle = `release: ${tagList}`;
+  const commitTitle = options?.commitTitle
+    ? options.commitTitle(defaultTitle, bumps)
+    : defaultTitle;
+
+  let commitMessage = `${commitTitle}\n\n`;
 
   for (const report of activeReports) {
     const firstReleaseBadge = report.isFirstRelease ? ' (first release)' : '';
@@ -51,7 +66,10 @@ export function generateCommitMessage(reports: DependencyUpdateReport[]): string
  */
 export function run(
   prepared: PreparedUpdate,
-  options: { cwd: string },
+  options: {
+    cwd: string;
+    commitTitle?: (defaultTitle: string, bumps: Record<string, string>) => string;
+  },
 ): Effect.Effect<void, Error, VcsProvider> {
   return Effect.gen(function*() {
     const vcs = yield* VcsProviderService;
@@ -97,7 +115,9 @@ export function run(
     updateLockfile(cwd, reports);
 
     // 3. Build multi-line commit message
-    const commitMessage = generateCommitMessage(reports);
+    const commitMessage = generateCommitMessage(reports, {
+      commitTitle: options.commitTitle,
+    });
     if (!commitMessage) {
       return;
     }
