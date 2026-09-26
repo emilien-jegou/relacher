@@ -5,6 +5,7 @@ export type UpdateActionOptions = {
   newVersion: string;
   globalCommits: Commit[];
   crateCommits: Commit[];
+  commitsSincePreRelease?: Commit[];
 };
 
 export interface UpdateActionResolved {
@@ -23,6 +24,7 @@ export interface UpdateAction {
   params: any;
   prepare(data: UpdateActionOptions): UpdateActionResolved;
   skipIf(fn: (cwd: string) => boolean): this;
+  shouldSkip(cwd: string): boolean;
   _skipIf(cwd: string): boolean;
 }
 
@@ -60,47 +62,48 @@ type UpdateBuilderParams<T, K = undefined> = {
 
 export const updateBuilder =
   <T, K = undefined>({ kind, apply, prepare }: UpdateBuilderParams<T, K>) =>
-    (targetPath: string, params: Layered<T>) => {
-      let skipIfCallback: ((cwd: string) => boolean) | undefined;
+  (targetPath: string, params: Layered<T>) => {
+    let skipIfCallback: ((cwd: string) => boolean) | undefined;
 
-      const action: UpdateAction = {
-        kind,
-        path: targetPath,
-        params,
-        required: params.required,
-        onlyOn: params.onlyOn,
-        skipIf(fn: (cwd: string) => boolean) {
-          skipIfCallback = fn;
-          return this;
-        },
-        _skipIf(cwd: string) {
-          return skipIfCallback ? skipIfCallback(cwd) : false;
-        },
-        prepare(options: UpdateActionOptions): UpdateActionResolved {
-          const preparedData = prepare?.({ params, targetPath, options }) as K;
+    const action: UpdateAction = {
+      kind,
+      path: targetPath,
+      params,
+      required: params.required,
+      onlyOn: params.onlyOn,
+      skipIf(fn: (cwd: string) => boolean) {
+        skipIfCallback = fn;
+        return this;
+      },
+      shouldSkip(cwd: string) {
+        return skipIfCallback ? skipIfCallback(cwd) : false;
+      },
+      _skipIf(cwd: string) {
+        return this.shouldSkip(cwd);
+      },
+      prepare(options: UpdateActionOptions): UpdateActionResolved {
+        const preparedData = prepare?.({ params, targetPath, options }) as K;
 
-          return {
-            kind,
-            targetPath,
-            params,
-            preparedData,
-            apply(report: DependencyUpdateReport, reports: DependencyUpdateReport[], cwd: string) {
-              if (skipIfCallback?.(cwd)) {
-                return;
-              }
-              apply({
-                preparedData,
-                targetPath,
-                params,
-                options,
-                report,
-                reports,
-                cwd,
-              });
-            },
-          };
-        },
-      };
-
-      return action;
+        return {
+          kind,
+          targetPath,
+          params,
+          preparedData,
+          apply(report: DependencyUpdateReport, reports: DependencyUpdateReport[], cwd: string) {
+            if (skipIfCallback?.(cwd)) return;
+            apply({
+              preparedData,
+              targetPath,
+              params,
+              options,
+              report,
+              reports,
+              cwd,
+            });
+          },
+        };
+      },
     };
+
+    return action;
+  };

@@ -1,4 +1,4 @@
-import { describe, it, expect, spyOn, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -10,12 +10,14 @@ import { run } from '../src/run';
 import { VcsProviderService } from '../src/vcs';
 
 import { mktemp } from './utils/repo';
+import { createMockVcs } from './utils/vcs';
+import type { PreparedUpdate } from '../src';
 
 describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => {
   let warnSpy: any;
 
   beforeEach(() => {
-    warnSpy = spyOn(log, 'warn').mockImplementation(() => { });
+    warnSpy = spyOn(log, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -29,16 +31,12 @@ describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => 
     fs.writeFileSync(lockPath, existingContent, 'utf8');
 
     let commitCalled = false;
-    const mockVcs = {
-      getCommits: () => Effect.succeed([]),
-      getHeadCommit: () => Effect.succeed('mock-hash'),
-      findLastReleaseCommit: () => Effect.succeed(null),
-      isDirty: () => Effect.succeed(false),
+    const mockVcs = createMockVcs({
       commit: () => {
         commitCalled = true;
         return Effect.void;
       },
-    };
+    });
 
     const packages = [{ name: 'pkg-a', updates: [] }];
 
@@ -55,30 +53,22 @@ describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => 
     const lockPath = path.resolve(temp.path, '.relacher.lock');
 
     let committedMessage = '';
-    const mockVcs = {
-      getCommits: () => Effect.succeed([]),
-      getHeadCommit: () => Effect.succeed('mock-hash'),
-      findLastReleaseCommit: () => Effect.succeed(null),
-      isDirty: () => Effect.succeed(false),
+    const mockVcs = createMockVcs({
       commit: (message: string) => {
         committedMessage = message;
         return Effect.void;
       },
-    };
+    });
 
     const packages = [
       {
         name: 'pkg-stable',
-        versionFallback: {
-          readFallback: () => '1.2.3',
-        },
+        versionFallback: { readFallback: () => '1.2.3' },
         updates: [],
       },
       {
         name: 'pkg-pre',
-        versionFallback: {
-          readFallback: () => '2.0.0-rc.1',
-        },
+        versionFallback: { readFallback: () => '2.0.0-rc.1' },
         updates: [],
       },
       {
@@ -118,13 +108,7 @@ describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => 
     using temp = mktemp();
     const lockPath = path.resolve(temp.path, '.relacher.lock');
 
-    const mockVcs = {
-      getCommits: () => Effect.succeed([]),
-      getHeadCommit: () => Effect.succeed('mock-hash'),
-      findLastReleaseCommit: () => Effect.succeed(null),
-      isDirty: () => Effect.succeed(false),
-      commit: () => Effect.void,
-    };
+    const mockVcs = createMockVcs();
 
     const packages = [
       {
@@ -160,15 +144,7 @@ describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => 
 
   it('should refuse to initialize if the repository is dirty', async () => {
     using temp = mktemp();
-
-    const mockVcs = {
-      getCommits: () => Effect.succeed([]),
-      getHeadCommit: () => Effect.succeed('mock-hash'),
-      findLastReleaseCommit: () => Effect.succeed(null),
-      isDirty: () => Effect.succeed(true),
-      commit: () => Effect.void,
-    };
-
+    const mockVcs = createMockVcs({ isDirty: () => Effect.succeed(true) });
     const packages = [{ name: 'pkg-a', updates: [] }];
 
     const program = init(packages, { cwd: temp.path }).pipe(
@@ -179,15 +155,9 @@ describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => 
   });
 
   it('should refuse to run release if the repository is dirty', async () => {
-    const mockVcs = {
-      getCommits: () => Effect.succeed([]),
-      getHeadCommit: () => Effect.succeed('mock-hash'),
-      findLastReleaseCommit: () => Effect.succeed(null),
-      isDirty: () => Effect.succeed(true),
-      commit: () => Effect.void,
-    };
+    const mockVcs = createMockVcs({ isDirty: () => Effect.succeed(true) });
 
-    const preparedUpdate = {
+    const preparedUpdate: PreparedUpdate = {
       isEmpty: false,
       isInvalid: false,
       deps: [
@@ -198,9 +168,10 @@ describe('Lockfile Initialization (init) and Release (run) Dirty Checks', () => 
           bump: 'minor',
           commits: [],
           updates: [],
+          depends: [],
         },
       ],
-    } as any;
+    };
 
     const program = run(preparedUpdate, { cwd: '/mock-path' }).pipe(
       Effect.provideService(VcsProviderService, mockVcs),

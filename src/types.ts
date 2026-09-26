@@ -22,10 +22,23 @@ export interface ChangelogContext {
 
 export interface PackageConfig {
   name: string;
+  manifestPath?: string;
   watch?: string[];
   updates: UpdateAction[];
   versionFallback?: VersionFallback;
   depends?: string[];
+  coupled?: string[];
+  group?: string;
+}
+
+// In src/types.ts:
+export interface PrepareOptions {
+  cwd?: string;
+  excludeNestedWatches?: boolean;
+  /** Force a bump size across all packages (e.g. true for patch, or 'minor' / 'major') */
+  force?: boolean | BumpSize;
+  /** Selectively force bump sizes for specific packages */
+  forcePackages?: Record<string, BumpSize>;
 }
 
 export interface PrepareOptions {
@@ -38,39 +51,34 @@ export interface DependencyError {
   message: string;
 }
 
+export interface BaseReport<TUpdates> {
+  name: string;
+  currentVersion: string;
+  newVersion: string;
+  lastStableVersion?: string | null;
+  bump: BumpSize;
+  originalBump?: BumpSize;
+  commits: Commit[];
+  commitsSincePreRelease?: Commit[];
+  updates: TUpdates;
+  depends: string[];
+  coupled?: string[];
+  group?: string;
+  isErroneous?: boolean;
+  isFirstRelease?: boolean;
+}
+
+export type IntermediateReport = BaseReport<UpdateAction[]>;
+
+export interface DependencyUpdateReport extends BaseReport<UpdateActionResolved[]> {
+  skipTag?: boolean;
+}
+
 export type PreparedUpdate = {
   isEmpty: boolean;
   deps: DependencyUpdateReport[];
   isDirty?: boolean;
-} & ({ isInvalid: true; errors: DependencyError[] } | { isInvalid: false });
-
-export interface DependencyUpdateReport {
-  name: string;
-  currentVersion: string;
-  lastStableVersion?: string | null;
-  newVersion: string;
-  bump: BumpSize;
-  originalBump?: BumpSize;
-  commits: Commit[];
-  commitsSincePreRelease?: Commit[];
-  updates: UpdateActionResolved[];
-  depends?: string[];
-  skipTag?: boolean;
-  isErroneous?: boolean;
-  isFirstRelease?: boolean;
-}
-
-export interface IntermediateReport {
-  name: string;
-  currentVersion: string;
-  newVersion: string;
-  bump: BumpSize;
-  lastStableVersion?: string | null;
-  originalBump?: BumpSize;
-  commits: Commit[];
-  commitsSincePreRelease?: Commit[];
-  updates: UpdateAction[];
-  depends: string[];
-  isErroneous?: boolean;
-  isFirstRelease?: boolean;
-}
+} & (
+  | { isInvalid: true; errors: DependencyError[] }
+  | { isInvalid: false; errors?: DependencyError[] }
+);

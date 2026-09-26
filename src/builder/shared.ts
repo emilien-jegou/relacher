@@ -1,75 +1,43 @@
-import type { PackageConfig } from '../types';
-import type { UpdateAction, VersionFallback } from '../updater';
+import path from 'node:path';
+
+import type { ChangelogContext, PackageConfig } from '../types';
+import {
+  changelogUpdate,
+  githubChangelogTemplate,
+  regexUpdate,
+  type UpdateAction,
+  type VersionFallback,
+} from '../updater';
+import type { BumpSize } from '../versioning/types';
 
 export interface PackageListError {
   name: string;
   message: string;
 }
 
-export interface PackageList extends Array<PackageConfig> {
-  /** Internal array storing any validation/scoping errors */
-  errors: PackageListError[];
+export class PackageList extends Array<PackageConfig> {
+  public errors: PackageListError[] = [];
 
-  /** Merges another list or array of configs into this one, inheriting any errors */
-  append(configs: PackageConfig[]): this;
-
-  /** Attaches update actions (e.g. file replacements, changelogs) to a specific package */
-  onPackageBump(name: string, ...actions: UpdateAction[]): this;
-
-  /** Attaches update actions to ALL packages currently in the list */
-  onAllPackages(...actions: UpdateAction[]): this;
-
-  /**
-   * Couples two packages together so that if one bumps, the other bumps to the exact same version.
-   * Useful for tightly integrated monorepo packages (e.g. core & cli).
-   */
-  couple(a: string, b: string): this;
-
-  /** Validates that the provided packages exist in the current scope */
-  assertFound(...names: string[]): this;
-
-  /** Adds dependency linkages, enforcing that the target dependency is already in scope */
-  addDepsOn(pkgName: string, dependsOn: string | string[]): this;
-
-  /** Removes the specified packages from the list entirely */
-  ignore(...names: string[]): this;
-
-  /** Removes ALL packages from the list EXCEPT the specified ones */
-  only(...names: string[]): this;
-
-  /** Adds custom file paths to watch for changes that should trigger a bump for this package */
-  addWatchFiles(pkgName: string, paths: string | string[]): this;
-
-  /** Overrides the fallback strategy used if the package has no previously published tags */
-  setVersionFallback(pkgName: string, fallback: VersionFallback): this;
-}
-
-export function createPackageList(configs: PackageConfig[] = []): PackageList {
-  const list = [...configs] as PackageList;
-
-  // Inherit errors if initialized with an existing PackageList
-  list.errors =
-    'errors' in configs && Array.isArray((configs as any).errors)
-      ? [...(configs as any).errors]
-      : [];
-
-  list.append = function(newConfigs: PackageConfig[]) {
-    this.push(...newConfigs);
-
-    // Bubble up errors from nested/appended PackageLists
-    if ('errors' in newConfigs && Array.isArray((newConfigs as any).errors)) {
-      this.errors.push(...(newConfigs as any).errors);
+  public static create(configs: PackageConfig[] = []): PackageList {
+    const list = new PackageList(...configs);
+    if ('errors' in configs && Array.isArray((configs as { errors: PackageListError[] }).errors)) {
+      list.errors.push(...(configs as { errors: PackageListError[] }).errors);
     }
+    return list;
+  }
 
+  public append(newConfigs: PackageConfig[] | PackageList): this {
+    this.push(...newConfigs);
+    if ('errors' in newConfigs && Array.isArray((newConfigs as PackageList).errors)) {
+      this.errors.push(...(newConfigs as PackageList).errors);
+    }
     return this;
-  };
+  }
 
-  list.onPackageBump = function(name: string, ...actions: UpdateAction[]) {
+  public onPackageBump(name: string, ...actions: UpdateAction[]): this {
     const dep = this.find((d) => d.name === name);
     if (dep) {
-      if (!dep.updates) {
-        dep.updates = [];
-      }
+      if (!dep.updates) dep.updates = [];
       dep.updates.push(...actions);
     } else {
       this.errors.push({
@@ -78,35 +46,125 @@ export function createPackageList(configs: PackageConfig[] = []): PackageList {
       });
     }
     return this;
-  };
+  }
 
-  list.onAllPackages = function(...actions: UpdateAction[]) {
+  public onAllPackages(...actions: UpdateAction[]): this {
     for (const pkg of this) {
-      if (!pkg.updates) {
-        pkg.updates = [];
-      }
+      if (!pkg.updates) pkg.updates = [];
       pkg.updates.push(...actions);
     }
     return this;
-  };
+  }
 
-  list.couple = function(a: string, b: string) {
-    const itemA = this.find((d) => d.name === a) as any;
-    const itemB = this.find((d) => d.name === b) as any;
-
-    if (!itemA) this.errors.push({ name: a, message: `Cannot couple unknown package '${a}'.` });
-    if (!itemB) this.errors.push({ name: b, message: `Cannot couple unknown package '${b}'.` });
-
-    if (itemA && itemB) {
-      itemA.coupled = itemA.coupled || [];
-      itemB.coupled = itemB.coupled || [];
-      if (!itemA.coupled.includes(b)) itemA.coupled.push(b);
-      if (!itemB.coupled.includes(a)) itemB.coupled.push(a);
+  public group(groupName: string, ...packageNames: string[]): this {
+    for (const name of packageNames) {
+      const pkg = this.find((p) => p.name === name);
+      if (pkg) {
+        pkg.group = groupName;
+        pkg.coupled = pkg.coupled || [];
+        for (const other of packageNames) {
+          if (other !== name && !pkg.coupled.includes(other)) {
+            pkg.coupled.push(other);
+          }
+        }
+      } else {
+        this.errors.push({
+          name,
+          message: `Cannot add unknown package '${name}' to group '${groupName}'.`,
+        });
+      }
     }
     return this;
-  };
+  }
 
-  list.assertFound = function(...names: string[]) {
+  public couple(...args: [string, string] | [string[]]): this {
+    if (Array.isArray(args[0])) {
+      for (const groupMembers of args as string[][]) {
+        this.group(`coupled__${groupMembers.join('__')}`, ...groupMembers);
+      }
+      return this;
+    }
+    const [a, b] = args as [string, string];
+    return this.group(`coupled__${a}__${b}`, a, b);
+  }
+
+  /**
+   * Automatically adds a CHANGELOG.md update action to each package's directory.
+   * Defaults to onlyOn: ['major', 'minor', 'patch'] so pre-releases are skipped.
+   */
+  public withChangelogs(options?: {
+    only?: string[];
+    exclude?: string[];
+    onlyOn?: BumpSize[];
+    template?: (ctx: ChangelogContext) => string;
+  }): this {
+    const onlyOn = options?.onlyOn ?? ['major', 'minor', 'patch'];
+
+    for (const pkg of this) {
+      if (options?.only && !options.only.includes(pkg.name)) continue;
+      if (options?.exclude && options.exclude.includes(pkg.name)) continue;
+
+      const pkgDir = pkg.watch?.[0] || '.';
+      const changelogPath = path.posix.join(pkgDir.replace(/\\/g, '/'), 'CHANGELOG.md');
+
+      this.onPackageBump(
+        pkg.name,
+        changelogUpdate(changelogPath, {
+          onlyOn,
+          template: options?.template,
+        }),
+      );
+    }
+    return this;
+  }
+
+  /**
+   * Attaches a workspace-wide root CHANGELOG.md that captures all changes across packages.
+   * Defaults to onlyOn: ['major', 'minor', 'patch'] so pre-releases are skipped.
+   */
+  public withRootChangelog(options?: {
+    github?: string;
+    path?: string;
+    onlyOn?: BumpSize[];
+    template?: (ctx: ChangelogContext) => string;
+  }): this {
+    const changelogPath = options?.path || 'CHANGELOG.md';
+    const template = options?.template ?? (options?.github ? githubChangelogTemplate(options.github) : undefined);
+    const onlyOn = options?.onlyOn ?? ['major', 'minor', 'patch'];
+
+    this.onAllPackages(
+      changelogUpdate(changelogPath, {
+        global: true,
+        onlyOn,
+        template,
+      }),
+    );
+    return this;
+  }
+
+  /**
+   * Declaratively syncs a package version to any file on disk (e.g. `flake.nix`, `README.md`).
+   * Supports `options.onlyOn` to restrict updates to specific bump types.
+   */
+  public syncVersion(
+    packageName: string,
+    filePath: string,
+    pattern: string | RegExp = 'version = "[^"]+"',
+    replaceTemplate = 'version = "{{version}}"',
+    options?: { onlyOn?: BumpSize[] },
+  ): this {
+    const search = typeof pattern === 'string' ? pattern : pattern.source;
+    return this.onPackageBump(
+      packageName,
+      regexUpdate(filePath, {
+        search,
+        replace: replaceTemplate,
+        onlyOn: options?.onlyOn,
+      }),
+    );
+  }
+
+  public assertFound(...names: string[]): this {
     for (const name of names) {
       if (!this.some((p) => p.name === name)) {
         this.errors.push({
@@ -116,9 +174,9 @@ export function createPackageList(configs: PackageConfig[] = []): PackageList {
       }
     }
     return this;
-  };
+  }
 
-  list.addDepsOn = function(pkgName: string, dependsOn: string | string[]) {
+  public addDepsOn(pkgName: string, dependsOn: string | string[]): this {
     const pkg = this.find((p) => p.name === pkgName);
     if (!pkg) {
       this.errors.push({
@@ -129,7 +187,6 @@ export function createPackageList(configs: PackageConfig[] = []): PackageList {
     }
 
     const deps = Array.isArray(dependsOn) ? dependsOn : [dependsOn];
-
     for (const dep of deps) {
       const target = this.find((p) => p.name === dep);
       if (!target) {
@@ -142,25 +199,24 @@ export function createPackageList(configs: PackageConfig[] = []): PackageList {
         if (!pkg.depends.includes(dep)) pkg.depends.push(dep);
       }
     }
-
     return this;
-  };
+  }
 
-  list.ignore = function(...names: string[]) {
+  public ignore(...names: string[]): this {
     const filtered = this.filter((p) => !names.includes(p.name));
-    this.length = 0; // clear current contents
+    this.length = 0;
     this.push(...filtered);
     return this;
-  };
+  }
 
-  list.only = function(...names: string[]) {
+  public only(...names: string[]): this {
     const filtered = this.filter((p) => names.includes(p.name));
-    this.length = 0; // clear current contents
+    this.length = 0;
     this.push(...filtered);
     return this;
-  };
+  }
 
-  list.addWatchFiles = function(pkgName: string, paths: string | string[]) {
+  public addWatchFiles(pkgName: string, paths: string | string[]): this {
     const pkg = this.find((p) => p.name === pkgName);
     if (!pkg) {
       this.errors.push({
@@ -173,11 +229,10 @@ export function createPackageList(configs: PackageConfig[] = []): PackageList {
     if (!pkg.watch) pkg.watch = [];
     const pathsArray = Array.isArray(paths) ? paths : [paths];
     pkg.watch.push(...pathsArray);
-
     return this;
-  };
+  }
 
-  list.setVersionFallback = function(pkgName: string, fallback: VersionFallback) {
+  public setVersionFallback(pkgName: string, fallback: VersionFallback): this {
     const pkg = this.find((p) => p.name === pkgName);
     if (!pkg) {
       this.errors.push({
@@ -188,7 +243,9 @@ export function createPackageList(configs: PackageConfig[] = []): PackageList {
     }
     pkg.versionFallback = fallback;
     return this;
-  };
+  }
+}
 
-  return list;
+export function createPackageList(configs: PackageConfig[] = []): PackageList {
+  return PackageList.create(configs);
 }

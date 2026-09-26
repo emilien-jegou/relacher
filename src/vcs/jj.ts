@@ -1,176 +1,135 @@
-import { execSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { Effect, Layer } from 'effect';
 
 import type { Commit } from '../types';
 
-import { VcsProviderService, type VcsProvider } from './index';
+import { parseCommitLine } from './commit';
+import { isInsideJjWorkTree, isJjTracked } from './common';
+import { VcsError, VcsProviderService, type VcsProvider } from './index';
 
-export function runJj(
-  cmd: string,
-  cwd: string,
-  opts = { withStdio: false },
-): Effect.Effect<string, never> {
-  return Effect.sync(() => {
-    try {
-      const colorFlag = opts.withStdio ? '' : '--color=never';
-      return execSync(`jj ${colorFlag} ${cmd}`, {
+const execFileAsync = promisify(execFile);
+
+function normalizeArgs(cmdOrArgs: string | string[]): string[] {
+  if (Array.isArray(cmdOrArgs)) return cmdOrArgs;
+  const matches = cmdOrArgs.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  const args = matches.map((arg) => {
+    if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
+      return arg.slice(1, -1);
+    }
+    return arg;
+  });
+  if (args[0] === 'jj') args.shift();
+  return args;
+}
+
+export function runJj(cmdOrArgs: string | string[], cwd: string): Effect.Effect<string, VcsError> {
+  const args = normalizeArgs(cmdOrArgs);
+  return Effect.tryPromise({
+    try: async () => {
+      const { stdout } = await execFileAsync('jj', ['--color=never', ...args], {
         cwd,
         encoding: 'utf8',
-        stdio: opts.withStdio ? [] : ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      return '';
-    }
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      return stdout.trim();
+    },
+    catch: (error) =>
+      new VcsError({
+        message: `Jujutsu command failed: jj ${args.join(' ')}`,
+        command: `jj ${args.join(' ')}`,
+        cause: error,
+      }),
   });
 }
 
+export function isJjTrackedSync(filePath: string, cwd: string): boolean {
+  if (!isInsideJjWorkTree(cwd)) return true;
+  return isJjTracked(filePath, cwd);
+}
+
 export function getJjCommits(
-  name: string,
   watch: string[],
   lastCommit: string | null,
   cwd: string,
   exclude: string[] = [],
-): Effect.Effect<Commit[], never> {
-  let range = lastCommit ? `"${lastCommit}"..@ & ~root()` : `::@ & ~root()`;
+): Effect.Effect<Commit[], VcsError> {
+  let revset = lastCommit ? `"${lastCommit}"..@ & ~root()` : `::@ & ~root()`;
 
-  if (exclude && exclude.length > 0) {
-    for (const ext of exclude) {
-      range += ` & ~file("${ext}")`;
-    }
+  for (const ext of exclude) {
+    revset += ` & ~files("${ext}")`;
   }
 
   const template =
     'commit_id.short(40) ++ "|" ++ author.name() ++ "|" ++ author.timestamp().format("%Y-%m-%d") ++ "|" ++ description.first_line() ++ "\\n"';
 
-  const watchPaths = watch.join(' ');
-  const jjCmd = watchPaths
-    ? `log --no-graph -r '${range}' -T '${template}' -- ${watchPaths}`
-    : `log --no-graph -r '${range}' -T '${template}'`;
+  const args = ['log', '--no-graph', '-r', revset, '-T', template];
+  if (watch.length > 0) {
+    args.push('--', ...watch);
+  }
 
-  return runJj(jjCmd, cwd).pipe(
+  return runJj(args, cwd).pipe(
     Effect.map((output) =>
       output
         .split('\n')
-        .filter(Boolean)
-        .map((line) => {
-          const parts = line.split('|');
-          const hash = parts[0] ?? '';
-          const author = parts[1] ?? '';
-          const date = parts[2] ?? '';
-          const msgParts = parts.slice(3);
-          const message = msgParts.join('|').trim();
-
-          const ccMatch = message.match(/^([a-zA-Z]+)(?:\(([^)]+)\))?(!)?:\s*(.+)$/);
-
-          const type = ccMatch ? (ccMatch[1] ?? 'other') : 'other';
-          const scope = ccMatch ? (ccMatch[2] ?? null) : null;
-          const isBreaking = (ccMatch && !!ccMatch[3]) || message.includes('BREAKING CHANGE');
-          const description = ccMatch ? (ccMatch[4] ?? message) : message;
-
-          return {
-            hash,
-            shortHash: hash.slice(0, 7),
-            author,
-            date,
-            message,
-            type,
-            scope,
-            isBreaking,
-            description,
-          };
-        }),
+        .map(parseCommitLine)
+        .filter((c): c is Commit => c !== null),
     ),
   );
 }
 
-export function getJjHeadCommit(cwd: string): Effect.Effect<string, never> {
-  return runJj('log --no-graph -r @ -T commit_id', cwd);
-}
+export function makeJjVcsProvider(cwd: string): VcsProvider {
+  return VcsProviderService.of({
+    getCommits: (watch, lastCommit, exclude = []) =>
+      getJjCommits(watch, lastCommit, cwd, exclude),
 
-export function findJjLastReleaseCommit(
-  packageName: string,
-  currentVersion: string,
-  cwd: string,
-): Effect.Effect<string | null, never> {
-  return runJj('log --no-graph -T \'commit_id ++ "\\n"\' -- .relacher.lock', cwd).pipe(
-    Effect.map((output) => {
-      const hashes = output
-        .split('\n')
-        .map((h) => h.trim())
-        .filter(Boolean);
-      if (hashes.length === 0) return null;
+    getHeadCommit: () => runJj(['log', '--no-graph', '-r', '@', '-T', 'commit_id'], cwd),
 
-      let lastMatchingHash: string | null = null;
-
-      for (const hash of hashes) {
+    getFileAtCommit: (filePath, commitHash) =>
+      Effect.sync(() => {
         try {
-          const content = execSync(`jj file show .relacher.lock -r ${hash}`, {
+          return execFileSync('jj', ['--color=never', 'file', 'show', filePath, '-r', commitHash], {
             cwd,
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
           });
-
-          const data = JSON.parse(content);
-          const version = data.packages?.[packageName]?.version;
-
-          if (version === currentVersion) {
-            lastMatchingHash = hash;
-          } else {
-            return lastMatchingHash;
-          }
         } catch {
-          return lastMatchingHash;
+          return null;
         }
-      }
+      }),
 
-      return lastMatchingHash;
-    }),
-  );
-}
+    getFileHistoryCommits: (filePath) =>
+      runJj(['log', '--no-graph', '-T', 'commit_id ++ "\\n"', '--', filePath], cwd).pipe(
+        Effect.map((out) =>
+          out
+            .split('\n')
+            .map((h) => h.trim())
+            .filter(Boolean),
+        ),
+      ),
 
-export function isJjDirty(cwd: string): Effect.Effect<boolean, never> {
-  return Effect.gen(function*() {
-    // 1. Check if current commit @ is not empty
-    const currentStatus = yield* runJj(
-      'log --no-graph -r @ -T \'if(empty, "empty", "not-empty")\'',
-      cwd,
-    );
-    if (currentStatus.trim() === 'not-empty') {
-      return true;
-    }
+    isTracked: (filePath) => Effect.sync(() => isJjTrackedSync(filePath, cwd)),
 
-    // 2. Check if there are any commits without a description in the history (excluding root and the current commit)
-    const historyDescriptions = yield* runJj(
-      'log --no-graph -r "::@ & ~@ & ~root()" -T \'if(description, "1", "0")\'',
-      cwd,
-    );
-    if (historyDescriptions.includes('0')) {
-      return true;
-    }
+    commit: (message) => runJj(['commit', '-m', message], cwd).pipe(Effect.asVoid),
 
-    return false;
+    isDirty: () =>
+      Effect.gen(function* () {
+        const currentStatus = yield* runJj(
+          ['log', '--no-graph', '-r', '@', '-T', 'if(empty, "empty", "not-empty")'],
+          cwd,
+        );
+        if (currentStatus.trim() === 'not-empty') return true;
+
+        const historyDescriptions = yield* runJj(
+          ['log', '--no-graph', '-r', '::@ & ~@ & ~root()', '-T', 'if(description, "1", "0")'],
+          cwd,
+        );
+        return historyDescriptions.includes('0');
+      }),
   });
 }
 
-// Service Factory Implementation
-export function makeJjVcsProvider(cwd: string): VcsProvider {
-  return VcsProviderService.of({
-    getCommits: (name, watch, lastCommit, exclude = []) =>
-      getJjCommits(name, watch, lastCommit, cwd, exclude),
-
-    getHeadCommit: () => getJjHeadCommit(cwd),
-
-    findLastReleaseCommit: (packageName, currentVersion) =>
-      findJjLastReleaseCommit(packageName, currentVersion, cwd),
-
-    commit: (message) => runJj(`commit -m "${message}"`, cwd).pipe(Effect.asVoid),
-
-    isDirty: () => isJjDirty(cwd),
-  });
-}
-
-// Live Layer Factory for JJ
 export const JjVcsProviderLive = (cwd: string) =>
   Layer.effect(
     VcsProviderService,

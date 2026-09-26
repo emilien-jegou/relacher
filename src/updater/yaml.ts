@@ -5,7 +5,8 @@ import { parseDocument } from 'yaml';
 
 import type { DependencyUpdateReport } from '../types';
 
-import { type VersionFallback, updateBuilder } from '.';
+import { type VersionFallback, updateBuilder } from './builder';
+import { createMutationProxy } from './proxy';
 
 export type YamlFallbackParams = {
   path: string;
@@ -25,41 +26,12 @@ export const yamlFallback = (params: YamlFallbackParams): VersionFallback => ({
     try {
       const content = fs.readFileSync(filePath, 'utf8');
       const doc = parseDocument(content);
-      const parsed = doc.toJS();
-      return params.read(parsed) ?? null;
+      return params.read(doc.toJS()) ?? null;
     } catch {
       return null;
     }
   },
 });
-
-function createMutationProxy(
-  obj: any,
-  path: string[] = [],
-  onSet: (path: string[], value: any) => void,
-): any {
-  return new Proxy(obj, {
-    get(target, prop) {
-      if (typeof prop === 'symbol') return target[prop];
-      if (prop === 'toJSON') return () => target;
-
-      const value = target[prop];
-      if (value !== null && typeof value === 'object') {
-        return createMutationProxy(value, [...path, prop], onSet);
-      }
-      return value;
-    },
-    set(target, prop, value) {
-      if (typeof prop === 'symbol') {
-        target[prop] = value;
-        return true;
-      }
-      target[prop] = value;
-      onSet([...path, prop], value);
-      return true;
-    },
-  });
-}
 
 export const yamlUpdate = updateBuilder<YamlUpdateParams>({
   kind: 'yaml',
@@ -72,11 +44,10 @@ export const yamlUpdate = updateBuilder<YamlUpdateParams>({
     const parsed = doc.toJS();
 
     const modifications: Array<{ path: string[]; value: any }> = [];
-    const proxy = createMutationProxy(parsed, [], (path, value) => {
-      modifications.push({ path, value });
+    const proxy = createMutationProxy(parsed, [], (p, v) => {
+      modifications.push({ path: p, value: v });
     });
 
-    // Mutate the object proxy using the user provided callback
     params(proxy, report, reports);
 
     if (modifications.length === 0) return;

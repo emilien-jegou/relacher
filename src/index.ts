@@ -8,3 +8,5 @@ export * from './updater';
 export * from './versioning';
 export * from './lockfile';
 export * from './init';
+export * from './workspace/paths';
+export * from './orchestrator';

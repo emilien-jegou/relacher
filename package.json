@@ -1,11 +1,11 @@
 {
   "name": "relacher",
-				"version": "0.0.6",
-				"description": "Scriptable release orchestration library for monorepos",
-				"type": "module",
-				"private": false,
-				"author": "Emilien Jegou",           
-				"license": "MIT",
+  "version": "0.0.7",
+  "description": "Scriptable release orchestration library for monorepos",
+  "type": "module",
+  "private": false,
+  "author": "Emilien Jegou",
+  "license": "MIT",
   "homepage": "https://github.com/emilien-jegou/relache#readme",
   "repository": {
     "type": "git",
@@ -48,7 +48,7 @@
     "lint": "oxlint",
     "lint.fix": "oxlint --fix",
     "lint.watch": "oxlint --watch",
-    "prepublishOnly": "bun run ts:build"
+    "prepublishOnly": "bun run ts.build"
   },
   "devDependencies": {
     "@types/bun": "latest",

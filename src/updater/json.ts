@@ -5,7 +5,8 @@ import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser';
 
 import type { DependencyUpdateReport } from '../types';
 
-import { type VersionFallback, updateBuilder } from '.';
+import { type VersionFallback, updateBuilder } from './builder';
+import { createMutationProxy } from './proxy';
 
 export type JsonFallbackParams = {
   path: string;
@@ -32,70 +33,38 @@ export const jsonFallback = (params: JsonFallbackParams): VersionFallback => ({
   },
 });
 
-function createMutationProxy(
-  obj: any,
-  path: string[] = [],
-  onSet: (path: string[], value: any) => void,
-): any {
-  return new Proxy(obj, {
-    get(target, prop) {
-      if (typeof prop === 'symbol') return target[prop];
-      if (prop === 'toJSON') return () => target;
-
-      const value = target[prop];
-      if (value !== null && typeof value === 'object') {
-        return createMutationProxy(value, [...path, prop], onSet);
-      }
-      return value;
-    },
-    set(target, prop, value) {
-      if (typeof prop === 'symbol') {
-        target[prop] = value;
-        return true;
-      }
-      target[prop] = value;
-      onSet([...path, prop], value);
-      return true;
-    },
-  });
-}
-
 export const jsonUpdate = updateBuilder<JsonUpdateParams>({
   kind: 'json',
   apply({ targetPath, params, report, reports, cwd }) {
     const filePath = path.resolve(cwd, targetPath);
     if (!fs.existsSync(filePath)) return;
 
-    const content = fs.readFileSync(filePath, 'utf8');
+    let content = fs.readFileSync(filePath, 'utf8');
     let parsed: any;
     try {
       parsed = parseJsonc(content);
-      if (parsed === undefined) {
-        throw new Error('Parsed content is undefined');
-      }
+      if (parsed === undefined) throw new Error('Parsed content is undefined');
     } catch (err) {
       console.error(`Failed to parse JSON file at ${filePath}:`, err);
       return;
     }
 
     const modifications: Array<{ path: string[]; value: any }> = [];
-    const proxy = createMutationProxy(parsed, [], (path, value) => {
-      modifications.push({ path, value });
+    const proxy = createMutationProxy(parsed, [], (p, v) => {
+      modifications.push({ path: p, value: v });
     });
 
-    // Mutate the object proxy using the user provided callback
     params(proxy, report, reports);
 
     if (modifications.length === 0) return;
 
-    let updatedContent = content;
     for (const mod of modifications) {
-      const edits = modify(updatedContent, mod.path, mod.value, {
+      const edits = modify(content, mod.path, mod.value, {
         formattingOptions: { insertSpaces: true, tabSize: 2 },
       });
-      updatedContent = applyEdits(updatedContent, edits);
+      content = applyEdits(content, edits);
     }
 
-    fs.writeFileSync(filePath, updatedContent);
+    fs.writeFileSync(filePath, content);
   },
 });
